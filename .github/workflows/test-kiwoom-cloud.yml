@@ -1,0 +1,23 @@
+name: Test Kiwoom domestic order API from cloud (one-off)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Test Kiwoom domestic order/cancel from cloud
+        env:
+          KIWOOM_PAPER_APP_KEY: ${{ secrets.KIWOOM_PAPER_APP_KEY }}
+          KIWOOM_PAPER_APP_SECRET: ${{ secrets.KIWOOM_PAPER_APP_SECRET }}
+        run: python test_kiwoom_cloud.py
