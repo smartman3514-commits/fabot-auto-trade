@@ -1,0 +1,194 @@
+"""오늘의 F&G 지수를 확인하고, FABOT 매매 규칙에 따른 신호를 판정합니다.
+
+매매 규칙 (CLAUDE.md 기준):
+- TQQQ 매수: F&G<=25 -> 실탄 25% / F&G<=20 -> 50% / F&G<=15 -> 100% (매수 후 10거래일 쿨다운)
+- TQQQ 매도: F&G>=75 -> 보유분 50% / F&G>=80 -> 잔량 전량 (쿨다운 없음)
+- 커버드콜 추가매수: F&G 35~65(평시) -> 실탄 20% (매수 후 10거래일 쿨다운)
+
+쿨다운 판정은 fabot-trade-journal(Supabase)의 실제 매매 기록을 조회해서 한다.
+CNN F&G 실시간 조회가 실패하면 fg_index.csv의 마지막 값으로 대체한다(오래된 값임을 표시).
+매 실행 결과는 signal_log.csv에 누적 기록한다.
+"""
+
+import csv
+from dataclasses import dataclass
+from datetime import date, datetime
+from pathlib import Path
+
+import pandas as pd
+import requests
+
+from cooldown import check_cooldown
+from price_proxy import WEIGHTS_VIXY, INTERCEPT_VIXY, compute_price_based_fg
+
+# fg-dashboard가 쓰는 공개 프로젝트 — 대시보드 index.html/login.html에도 그대로 노출된
+# 공개 anon 키라 여기서도 그대로 재사용한다(비밀값 아님).
+_LIVE_SUPABASE_URL = "https://wckohdcjpjlzeaiehmzs.supabase.co"
+_LIVE_SUPABASE_KEY = "sb_publishable_4fPOT_f1VwEvH4gEXumgjg_JH-7X_mY"
+
+TQQQ_TICKER = "TQQQ"
+COVERED_CALL_TICKER = "TIGER 미국나스닥100타겟데일리커버드콜"  # 종목코드 486290(KOSPI)
+# 실제 매수 종목은 이 티커가 아니라 472150(TIGER 배당커버드콜액티브)로 확정됨(2026-07-23) —
+# 486290은 분배금이 전부 배당소득세로 잡혀 세금상 불리해서 사용자가 의도적으로 바꾼 것.
+# 신호 판정/쿨다운 키는 이 상수(486290 쪽 이름)를 그대로 쓰고, 실행 종목코드 매핑은
+# auto_trade_loop.py의 COVERED_CALL_STOCK_CODE에서 관리한다.
+
+FG_INDEX_CSV = Path(__file__).resolve().parent / "fg_index.csv"
+PRICE_CACHE_CSV = Path(__file__).resolve().parent / "price_cache.csv"
+LOG_CSV = Path(__file__).resolve().parent / "signal_log.csv"
+
+
+@dataclass
+class RawSignal:
+    label: str
+    action: str  # "buy_tqqq" | "sell_tqqq" | "buy_covered_call" | "wait"
+    ticker: str | None
+
+
+def judge_signal(score: float) -> str:
+    """live_fg.py / export_dashboard_data.py가 쓰는 기존 API (라벨 문자열만 필요, 쿨다운 미반영)."""
+    return judge_raw_signal(score).label
+
+
+def judge_raw_signal(score: float) -> RawSignal:
+    if score <= 15:
+        return RawSignal("TQQQ 매수 100% (극단적 공포)", "buy_tqqq", TQQQ_TICKER)
+    if score <= 20:
+        return RawSignal("TQQQ 매수 50%", "buy_tqqq", TQQQ_TICKER)
+    if score <= 25:
+        return RawSignal("TQQQ 매수 25%", "buy_tqqq", TQQQ_TICKER)
+    if score >= 80:
+        return RawSignal("TQQQ 매도 전량 (극단적 탐욕)", "sell_tqqq", None)
+    if score >= 75:
+        return RawSignal("TQQQ 매도 50%", "sell_tqqq", None)
+    if 35 <= score <= 65:
+        return RawSignal("커버드콜 추가매수 20% (평시)", "buy_covered_call", COVERED_CALL_TICKER)
+    return RawSignal("대기 (매수/매도 조건 밖)", "wait", None)
+
+
+def get_today_score() -> dict:
+    """종가 기준으로 F&G를 계산한다 — 장중 실시간 시세(CNN 라이브값·키움 실시간 호가)는
+    절대 쓰지 않는다. price_cache.csv는 refresh_price_cache.py가 장 마감 후 하루 1번
+    받아오는 확정 종가라, 이 파일을 그대로 계산에 쓰면 자연히 "가장 최근 완결된 거래일의
+    종가"만 반영된다 (2026-07-31, 사용자 요청으로 CNN 실시간값 대신 이 방식으로 전환).
+    price_cache.csv 조회 실패 시에만 fg_index.csv의 마지막 값으로 대체(fail-safe).
+    """
+    try:
+        df = pd.read_csv(PRICE_CACHE_CSV, index_col="date", parse_dates=True).sort_index()
+        fg_series = compute_price_based_fg(
+            qqq=df["QQQ"], vix=df["VIXY"], ief=df["IEF"], hyg=df["HYG"], lqd=df["LQD"],
+            weights=WEIGHTS_VIXY, intercept=INTERCEPT_VIXY,
+        )
+        last_date = fg_series.index[-1]
+        return {
+            "date": last_date.date(),
+            "score": float(fg_series.iloc[-1]),
+            "rating": "price_based_close",
+            "stale": False,
+        }
+    except Exception as exc:
+        df = pd.read_csv(FG_INDEX_CSV, index_col=0)
+        last_row = df.iloc[-1]
+        last_date = datetime.strptime(str(df.index[-1]), "%Y-%m-%d").date()
+        return {
+            "date": last_date,
+            "score": float(last_row["final_score"]),
+            "rating": "unknown",
+            "stale": True,
+            "error": str(exc),
+        }
+
+
+def get_realtime_score() -> dict:
+    """장 마감 직전 실행(auto_trade_loop.py의 마감 10분 전 스케줄)처럼, 오늘 확정될 종가를
+    기다릴 수 없고 "지금 이 순간" 값이 필요한 경우에 쓴다. get_today_score()(전일 확정
+    종가 기준, 2026-07-31 사용자 요청으로 확정된 기본 방식)와는 용도가 다르다 — 일반
+    신호 판정/기록에는 get_today_score()를 그대로 쓰고, 이 함수는 실시간 실행 전용이다.
+    dashboard/scripts/update_live_score.py가 5분마다 계산해 저장하는 price_based 최신값을
+    그대로 읽어온다(같은 계산을 여기서 중복하지 않음). 실패 시 get_today_score()로 대체.
+    """
+    try:
+        response = requests.get(
+            f"{_LIVE_SUPABASE_URL}/rest/v1/live_scores",
+            headers={"apikey": _LIVE_SUPABASE_KEY, "Authorization": f"Bearer {_LIVE_SUPABASE_KEY}"},
+            params={"source": "eq.price_based", "order": "computed_at.desc", "limit": "1"},
+            timeout=20,
+        )
+        response.raise_for_status()
+        rows = response.json()
+        if not rows:
+            raise RuntimeError("실시간 계산값이 아직 하나도 없음")
+        row = rows[0]
+        return {
+            "date": datetime.fromisoformat(row["computed_at"]).date(),
+            "score": float(row["score"]),
+            "rating": "realtime_price_based",
+            "stale": False,
+        }
+    except Exception as exc:
+        fallback = get_today_score()
+        fallback["stale"] = True
+        fallback["error"] = f"실시간 조회 실패, 전일 종가로 대체: {exc}"
+        return fallback
+
+
+def apply_cooldown(raw: RawSignal, cooldown_key: str | None = None, account: str | None = None) -> dict:
+    """cooldown_key: 실제 매매기록에 쓰인 키가 raw.ticker(신호상 명목 종목명)와 다를 때
+    (예: 커버드콜은 신호상 486290 이름을 쓰지만 실제로는 472150을 매매함) 호출부가
+    실제 매매기록 조회용 키를 넘긴다. 안 넘기면 raw.ticker를 그대로 쓴다.
+
+    account: 이 계좌의 매매기록만 놓고 쿨다운을 판정한다. 2026-08-14부터 KIS와 키움이
+    각자 독립적으로 같은 종목을 자동매매하게 되어서, account를 안 넘기면 한 계좌의
+    매수가 다른 계좌의 쿨다운까지 걸어버리는 문제가 생긴다."""
+    if raw.action not in ("buy_tqqq", "buy_covered_call"):
+        return {"final_label": raw.label, "cooldown": None}
+
+    cd = check_cooldown(cooldown_key or raw.ticker, account=account)
+    if cd["in_cooldown"]:
+        return {
+            "final_label": f"대기 (쿨다운) — 조건은 '{raw.label}'이지만 {cd['reason']}",
+            "cooldown": cd,
+        }
+    return {"final_label": raw.label, "cooldown": cd}
+
+
+def log_result(today_info: dict, raw: RawSignal, result: dict) -> None:
+    is_new = not LOG_CSV.exists()
+    with open(LOG_CSV, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if is_new:
+            writer.writerow([
+                "run_at", "fg_date", "fg_score", "fg_rating", "stale",
+                "raw_signal", "final_signal", "cooldown_reason",
+            ])
+        writer.writerow([
+            datetime.now().isoformat(timespec="seconds"),
+            today_info["date"],
+            today_info["score"],
+            today_info["rating"],
+            today_info["stale"],
+            raw.label,
+            result["final_label"],
+            result["cooldown"]["reason"] if result["cooldown"] else "",
+        ])
+
+
+def main() -> None:
+    today_info = get_today_score()
+    raw = judge_raw_signal(today_info["score"])
+    result = apply_cooldown(raw)
+    log_result(today_info, raw, result)
+
+    print("=== 오늘의 F&G 신호 리포트 ===")
+    print(f"날짜: {today_info['date']}" + (" (실시간 조회 실패 — fg_index.csv 마지막 값 사용)" if today_info["stale"] else ""))
+    if today_info["stale"]:
+        print(f"  실패 사유: {today_info['error']}")
+    print(f"F&G 점수: {today_info['score']:.1f} ({today_info['rating']})")
+    print(f"원 판정: {raw.label}")
+    print(f"최종 신호: {result['final_label']}")
+    if result["cooldown"] and not result["cooldown"]["in_cooldown"] and result["cooldown"]["last_buy_date"]:
+        print(f"  ({result['cooldown']['reason']})")
+
+
+if __name__ == "__main__":
+    main()

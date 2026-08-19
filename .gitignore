@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.kis_token_cache.json
+.kiwoom_token_cache*.json
+signal_log.csv
+output/

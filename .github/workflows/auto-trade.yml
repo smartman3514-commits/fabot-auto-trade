@@ -1,0 +1,77 @@
+name: FABOT auto-trade (KIS + Kiwoom)
+
+# 로컬 PC의 run_auto_trade_realtime.bat + Task Scheduler(FABOT_KR_Close/FABOT_US_Close)를
+# 그대로 클라우드로 옮긴 것 — 국내장 마감(15:19 KST)과 미국장 마감(04:50 KST) 두 번,
+# 같은 스크립트 두 개(KIS/키움)를 돌린다. PC가 꺼져있어도, 화면이 잠겨있어도 실행된다.
+
+on:
+  schedule:
+    - cron: "19 6 * * 1-5"   # 15:19 KST 평일 (국내장 마감 직전)
+    - cron: "50 19 * * 0-4"  # 04:50 KST 평일 (미국장 마감 직전, UTC로는 전날 저녁)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true면 신호만 판정하고 실제 주문은 절대 넣지 않음"
+        type: boolean
+        default: true
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # 키움 접근토큰이 실행마다 새로 발급되면 로컬 개발용 캐시가 무효화되는 문제가
+      # 있었다(update-fg.yml에서 이미 겪음) — 같은 방식으로 실행 간에 캐시를 이어받는다.
+      - name: Restore Kiwoom token cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .kiwoom_token_cache_demo_domestic.json
+          key: kiwoom-domestic-token-${{ github.run_id }}
+          restore-keys: |
+            kiwoom-domestic-token-
+
+      - name: Run KIS auto-trade (covered call + TQQQ)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          KIS_PAPER_APP_KEY: ${{ secrets.KIS_PAPER_APP_KEY }}
+          KIS_PAPER_APP_SECRET: ${{ secrets.KIS_PAPER_APP_SECRET }}
+          KIS_PAPER_STOCK: ${{ secrets.KIS_PAPER_STOCK }}
+        run: >
+          python auto_trade_loop.py --realtime
+          ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
+
+      - name: Run Kiwoom auto-trade (covered call only)
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          KIWOOM_PAPER_APP_KEY: ${{ secrets.KIWOOM_PAPER_APP_KEY }}
+          KIWOOM_PAPER_APP_SECRET: ${{ secrets.KIWOOM_PAPER_APP_SECRET }}
+        run: >
+          python auto_trade_loop_kiwoom.py --realtime
+          ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
+
+      - name: Save Kiwoom token cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .kiwoom_token_cache_demo_domestic.json
+          key: kiwoom-domestic-token-${{ github.run_id }}
+
+      - name: Upload voice briefing
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trade-briefing-${{ github.run_id }}
+          path: output/*.mp3
+          if-no-files-found: ignore
+          retention-days: 14
