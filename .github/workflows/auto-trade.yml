@@ -48,6 +48,7 @@ jobs:
         run: >
           python auto_trade_loop.py --realtime
           ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
+          2>&1 | tee kis_result.txt
 
       - name: Run Kiwoom auto-trade (covered call only)
         if: always()
@@ -59,6 +60,7 @@ jobs:
         run: >
           python auto_trade_loop_kiwoom.py --realtime
           ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
+          2>&1 | tee kiwoom_result.txt
 
       - name: Save Kiwoom token cache
         if: always()
@@ -75,3 +77,47 @@ jobs:
           path: output/*.mp3
           if-no-files-found: ignore
           retention-days: 14
+
+      # 인선님 요청(2026-08-20): 실행될 때마다(대기든 실제 매매든) 텔레그램으로 결과를
+      # 보낸다. 각 스크립트 출력에서 "F&G 점수/최종 신호/-> .../매매기록 저장" 줄만
+      # 골라서 요약한다 — 전체 로그를 그대로 보내면 너무 길어서 오히려 안 읽게 된다.
+      - name: Notify Telegram
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          summarize() {
+            if [ -f "$1" ]; then
+              grep -E "F&G 점수|최종 신호|-> |매매기록 저장" "$1" || echo "(요약할 결과 줄을 못 찾음 — 로그 확인 필요)"
+            else
+              echo "(실행 로그 없음)"
+            fi
+          }
+          {
+            echo "🤖 FABOT 자동매매 실행 ($(date -u -d '+9 hours' '+%Y-%m-%d %H:%M') KST)"
+            echo ""
+            echo "[KIS]"
+            summarize kis_result.txt
+            echo ""
+            echo "[키움]"
+            summarize kiwoom_result.txt
+          } > telegram_message.txt
+
+          python - <<'PY'
+          import os
+          import requests
+
+          with open("telegram_message.txt", encoding="utf-8") as f:
+              text = f.read()
+
+          token = os.environ["TELEGRAM_BOT_TOKEN"]
+          chat_id = os.environ["TELEGRAM_CHAT_ID"]
+          resp = requests.post(
+              f"https://api.telegram.org/bot{token}/sendMessage",
+              json={"chat_id": chat_id, "text": text[:4000]},
+              timeout=20,
+          )
+          resp.raise_for_status()
+          print("텔레그램 알림 전송 완료")
+          PY
