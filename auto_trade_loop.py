@@ -44,7 +44,11 @@ from overseas_order_executor import (
 )
 
 COVERED_CALL_STOCK_CODE = "472150"  # 실행 종목 (today_signal.COVERED_CALL_TICKER와 다른 상품 — 위 docstring 참고)
-COVERED_CALL_ALLOCATION = 0.20  # CLAUDE.md: 평시(F&G 35~65) 커버드콜 추가매수 = 실탄의 20%
+# 배분 비율은 today_signal.COVERED_CALL_ALLOCATION 하나로 통일한다 — 예전엔 여기 따로
+# 상수를 뒀는데, judge_raw_signal()의 라벨 텍스트("커버드콜 추가매수 20%")가 그 상수를
+# 안 보고 하드코딩돼 있어서 값만 10%로 바꿨을 때 화면엔 여전히 "20%"라고 찍히는
+# 불일치가 있었다(2026-08-22 발견, cooldown 3일/10% 변경 작업 중).
+COVERED_CALL_ALLOCATION = today_signal.COVERED_CALL_ALLOCATION
 
 # 매매기록/쿨다운 조회용 실제 종목명. today_signal.COVERED_CALL_TICKER("TIGER
 # 미국나스닥100타겟데일리커버드콜")는 신호 판정상의 명목 종목명일 뿐, 실제로 매매하는
@@ -91,7 +95,7 @@ def _not_executed(note: str) -> dict:
 async def _execute_covered_call_buy(today_info: dict, dry_run: bool) -> dict:
     cash = get_cash_balance()
     qty = _compute_covered_call_qty(cash)
-    print(f"실탄(예수금) {cash:,}원 -> 20% 배분, 주문수량 {qty}주 ({COVERED_CALL_STOCK_CODE})")
+    print(f"실탄(예수금) {cash:,}원 -> {COVERED_CALL_ALLOCATION:.0%} 배분, 주문수량 {qty}주 ({COVERED_CALL_STOCK_CODE})")
 
     if qty <= 0:
         print("계산된 수량이 0주라 주문을 생략합니다.")

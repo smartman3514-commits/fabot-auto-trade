@@ -44,7 +44,9 @@ from kiwoom_client import (
 
 COVERED_CALL_STOCK_CODE = "472150"
 COVERED_CALL_TRADE_KEY = "TIGER 배당커버드콜액티브(472150)"
-COVERED_CALL_ALLOCATION = 0.20  # CLAUDE.md: 평시(F&G 35~65) 커버드콜 추가매수 = 실탄의 20%
+# auto_trade_loop.py와 같은 이유로 today_signal.COVERED_CALL_ALLOCATION 하나로 통일
+# (2026-08-22) — 라벨 텍스트와 실제 배분 비율이 따로 놀지 않게.
+COVERED_CALL_ALLOCATION = today_signal.COVERED_CALL_ALLOCATION
 
 KIWOOM_ACCOUNT_LABEL = "키움 모의투자"
 
@@ -214,7 +216,7 @@ def execute_covered_call_buy(today_info: dict, dry_run: bool) -> dict:
         return _not_executed("국내 정규장 시간이 아니라 호가를 받을 수 없어 실행하지 않았습니다")
 
     qty = _compute_qty(cash, ref_price)
-    print(f"주문가능금액 {cash:,}원 -> 20% 배분, 주문수량 {qty}주 ({COVERED_CALL_STOCK_CODE})")
+    print(f"주문가능금액 {cash:,}원 -> {COVERED_CALL_ALLOCATION:.0%} 배분, 주문수량 {qty}주 ({COVERED_CALL_STOCK_CODE})")
 
     if qty <= 0:
         print("계산된 수량이 0주라 주문을 생략합니다.")

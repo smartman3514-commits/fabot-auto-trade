@@ -3,7 +3,7 @@
 매매 규칙 (CLAUDE.md 기준):
 - TQQQ 매수: F&G<=25 -> 실탄 25% / F&G<=20 -> 50% / F&G<=15 -> 100% (매수 후 10거래일 쿨다운)
 - TQQQ 매도: F&G>=75 -> 보유분 50% / F&G>=80 -> 잔량 전량 (쿨다운 없음)
-- 커버드콜 추가매수: F&G 35~65(평시) -> 실탄 20% (매수 후 10거래일 쿨다운)
+- 커버드콜 추가매수: F&G 35~65(평시) -> 실탄 10% (매수 후 3거래일 쿨다운, 2026-08-22 변경: 20%/10일 -> 10%/3일)
 
 쿨다운 판정은 fabot-trade-journal(Supabase)의 실제 매매 기록을 조회해서 한다.
 CNN F&G 실시간 조회가 실패하면 fg_index.csv의 마지막 값으로 대체한다(오래된 값임을 표시).
@@ -28,6 +28,16 @@ _LIVE_SUPABASE_KEY = "sb_publishable_4fPOT_f1VwEvH4gEXumgjg_JH-7X_mY"
 
 TQQQ_TICKER = "TQQQ"
 COVERED_CALL_TICKER = "TIGER 미국나스닥100타겟데일리커버드콜"  # 종목코드 486290(KOSPI)
+
+# 평시(F&G 35~65) 커버드콜 추가매수 배분 — 실제 주문 수량 계산(auto_trade_loop*.py의
+# _compute_covered_call_qty)도 이 값을 그대로 쓴다. 예전엔 auto_trade_loop.py/
+# auto_trade_loop_kiwoom.py 각자 자기 파일에 COVERED_CALL_ALLOCATION = 0.20을
+# 따로 들고 있었는데, judge_raw_signal()의 라벨 문자열("커버드콜 추가매수 20%")은
+# 하드코딩된 별개의 텍스트라서, 10%로 바꿨을 때 실제 주문액은 반으로 줄었는데
+# 화면·로그엔 여전히 "20%"라고 찍히는 불일치가 있었다(2026-08-22 발견). 이제 이
+# 상수 하나로 통일해서, 라벨도 f"{COVERED_CALL_ALLOCATION:.0%}"로 항상 실제
+# 값과 같이 움직이게 한다.
+COVERED_CALL_ALLOCATION = 0.10  # 2026-08-22, 20%에서 변경(10년 시뮬레이션으로 확인 후 결정)
 # 실제 매수 종목은 이 티커가 아니라 472150(TIGER 배당커버드콜액티브)로 확정됨(2026-07-23) —
 # 486290은 분배금이 전부 배당소득세로 잡혀 세금상 불리해서 사용자가 의도적으로 바꾼 것.
 # 신호 판정/쿨다운 키는 이 상수(486290 쪽 이름)를 그대로 쓰고, 실행 종목코드 매핑은
@@ -62,7 +72,7 @@ def judge_raw_signal(score: float) -> RawSignal:
     if score >= 75:
         return RawSignal("TQQQ 매도 50%", "sell_tqqq", None)
     if 35 <= score <= 65:
-        return RawSignal("커버드콜 추가매수 20% (평시)", "buy_covered_call", COVERED_CALL_TICKER)
+        return RawSignal(f"커버드콜 추가매수 {COVERED_CALL_ALLOCATION:.0%} (평시)", "buy_covered_call", COVERED_CALL_TICKER)
     return RawSignal("대기 (매수/매도 조건 밖)", "wait", None)
 
 
