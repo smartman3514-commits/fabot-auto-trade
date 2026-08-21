@@ -28,6 +28,7 @@ import time
 
 sys.stdout.reconfigure(encoding="utf-8")
 
+import account_summary
 import today_signal
 import voice_briefing
 from cooldown import log_trade
@@ -260,7 +261,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    today_info = today_signal.get_realtime_score() if args.realtime else today_signal.get_today_score()
+    today_info = today_signal.get_cnn_score() if args.realtime else today_signal.get_today_score()
     raw = today_signal.judge_raw_signal(today_info["score"])
     cooldown_key = COVERED_CALL_TRADE_KEY if raw.action == "buy_covered_call" else None
     result = today_signal.apply_cooldown(raw, cooldown_key=cooldown_key, account=KIWOOM_ACCOUNT_LABEL)
@@ -268,7 +269,11 @@ def main() -> None:
 
     print("=== [키움] 오늘의 F&G 신호 ===")
     print(f"날짜: {today_info['date']}" + (" (실시간 조회 실패 — 마지막 캐시값 사용)" if today_info["stale"] else ""))
-    print(f"F&G 점수: {today_info['score']:.1f} ({today_info['rating']})")
+    try:
+        print(account_summary.format_composition_line(account_summary.get_account_composition("Kiwoom")))
+    except Exception as exc:
+        print(f"(계좌 구성 조회 실패 — {exc})")
+    print(f"F&G {today_info['score']:.0f}점으로 {today_info.get('zone', today_info['rating'])}입니다.")
     print(f"원 판정: {raw.label}")
     print(f"최종 신호: {result['final_label']}")
 

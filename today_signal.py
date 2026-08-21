@@ -99,6 +99,65 @@ def get_today_score() -> dict:
         }
 
 
+_CNN_RATING_KR = {
+    "extreme fear": "극단적 공포",
+    "fear": "공포",
+    "neutral": "중립",
+    "greed": "탐욕",
+    "extreme greed": "극단적 탐욕",
+}
+
+
+def _zone_from_score(score: float) -> str:
+    """CNN이 rating 문자열을 안 주는 경우(자체 계산 fallback)를 위한 근사 구간
+    — CNN 공식 5단계 경계와 대략 맞춘 값(0-24/25-44/45-55/56-75/76-100)."""
+    if score <= 24:
+        return "극단적 공포"
+    if score <= 44:
+        return "공포"
+    if score <= 55:
+        return "중립"
+    if score <= 75:
+        return "탐욕"
+    return "극단적 탐욕"
+
+
+def get_cnn_score() -> dict:
+    """CNN 공식 Fear & Greed Index를 실시간으로 가져온다(인선님 요청, 2026-08-21) —
+    자체 계산(price_based)은 6개월~1년치 통계가 쌓여야 신뢰할 만한 balance를 찾을 수
+    있어서, 그때까지는 실제 CNN 지수를 신호 판정 기준으로 쓴다. CNN은 기본 User-Agent로
+    요청하면 418("I'm a teapot")로 막아서, 브라우저와 비슷한 헤더를 보내야 한다.
+    실패하면 get_realtime_score()(자체 계산)로 안전하게 대체한다."""
+    try:
+        response = requests.get(
+            "https://production.dataviz.cnn.io/index/fearandgreed/graphdata/2020-09-18",
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Accept": "application/json, text/plain, */*",
+                "Referer": "https://edition.cnn.com/markets/fear-and-greed",
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+        data = response.json()["fear_and_greed"]
+        return {
+            "date": datetime.fromisoformat(data["timestamp"]).date(),
+            "score": float(data["score"]),
+            "rating": "cnn_live",
+            "zone": _CNN_RATING_KR.get(data["rating"], data["rating"]),
+            "stale": False,
+        }
+    except Exception as exc:
+        fallback = get_realtime_score()
+        fallback["zone"] = _zone_from_score(fallback["score"])
+        fallback["stale"] = True
+        fallback["error"] = f"CNN 실시간 조회 실패, 자체 계산(price_based)으로 대체: {exc}"
+        return fallback
+
+
 def get_realtime_score() -> dict:
     """장 마감 직전 실행(auto_trade_loop.py의 마감 10분 전 스케줄)처럼, 오늘 확정될 종가를
     기다릴 수 없고 "지금 이 순간" 값이 필요한 경우에 쓴다. get_today_score()(전일 확정
