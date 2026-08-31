@@ -43,6 +43,12 @@ COVERED_CALL_TICKER = "TIGER 미국나스닥100타겟데일리커버드콜"  # �
 # 상수 하나로 통일해서, 라벨도 f"{COVERED_CALL_ALLOCATION:.0%}"로 항상 실제
 # 값과 같이 움직이게 한다.
 COVERED_CALL_ALLOCATION = 0.10  # 2026-08-22, 20%에서 변경(10년 시뮬레이션으로 확인 후 결정)
+
+# TQQQ 매수/매도 임계값 — 이름 붙은 상수로 빼서 judge_raw_signal()과 텔레그램 알림
+# (.github/workflows/auto-trade.yml)이 같은 값을 그대로 읽게 한다.
+# 2026-08-31 분기 재최적화 1차 결과 적용(기존 25/20/15, 75/80에서 변경).
+BUY_THRESHOLDS = (20, 25, 30)   # 이하일 때 각각 100%/50%/25% 매수
+SELL_THRESHOLDS = (72, 77)      # 이상일 때 각각 50%/전량 매도
 # 실제 매수 종목은 이 티커가 아니라 472150(TIGER 배당커버드콜액티브)로 확정됨(2026-07-23) —
 # 486290은 분배금이 전부 배당소득세로 잡혀 세금상 불리해서 사용자가 의도적으로 바꾼 것.
 # 신호 판정/쿨다운 키는 이 상수(486290 쪽 이름)를 그대로 쓰고, 실행 종목코드 매핑은
@@ -66,15 +72,17 @@ def judge_signal(score: float) -> str:
 
 
 def judge_raw_signal(score: float) -> RawSignal:
-    if score <= 20:
+    t100, t50, t25 = BUY_THRESHOLDS
+    s50, s100 = SELL_THRESHOLDS
+    if score <= t100:
         return RawSignal("TQQQ 매수 100% (극단적 공포)", "buy_tqqq", TQQQ_TICKER)
-    if score <= 25:
+    if score <= t50:
         return RawSignal("TQQQ 매수 50%", "buy_tqqq", TQQQ_TICKER)
-    if score <= 30:
+    if score <= t25:
         return RawSignal("TQQQ 매수 25%", "buy_tqqq", TQQQ_TICKER)
-    if score >= 77:
+    if score >= s100:
         return RawSignal("TQQQ 매도 전량 (극단적 탐욕)", "sell_tqqq", None)
-    if score >= 72:
+    if score >= s50:
         return RawSignal("TQQQ 매도 50%", "sell_tqqq", None)
     if 35 <= score <= 65:
         return RawSignal(f"커버드콜 추가매수 {COVERED_CALL_ALLOCATION:.0%} (평시)", "buy_covered_call", COVERED_CALL_TICKER)

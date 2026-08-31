@@ -100,8 +100,17 @@ jobs:
               echo "(실행 로그 없음)"
             fi
           }
+          rules_line=$(python -c "
+import today_signal as t
+b = t.BUY_THRESHOLDS
+s = t.SELL_THRESHOLDS
+c = __import__('cooldown').COOLDOWN_TRADING_DAYS
+print(f'매수 {b[2]}/{b[1]}/{b[0]} (25%/50%/100%) · 매도 {s[0]}/{s[1]} (50%/전량) · 쿨다운 {c}일')
+")
+
           {
             echo "🤖 FABOT 자동매매 실행 ($(date -u -d '+9 hours' '+%Y-%m-%d %H:%M') KST)"
+            echo "현재 규칙: $rules_line"
             echo ""
             echo "[한국투자]"
             summarize kis_result.txt
