@@ -1,7 +1,7 @@
 """fabot-trade-journal(Supabase)의 매매 기록을 조회해 쿨다운 상태를 판정합니다.
 
-CLAUDE.md 규칙: TQQQ 매수, 커버드콜 추가매수는 각각 매수 후 3거래일 쿨다운이 있다
-(2026-08-22, 10거래일에서 변경 — 인선님 요청).
+CLAUDE.md 규칙: TQQQ 매수, 커버드콜 추가매수는 각각 매수 후 4거래일 쿨다운이 있다
+(2026-08-31, 3거래일에서 변경 — 분기별 재최적화 1차 결과 적용, fg-index/optimize_fabot_params.py).
 매매 기록은 fabot-trade-journal 프로젝트의 Supabase `trades` 테이블에 이미 쌓이고 있으므로,
 그 기록에서 종목별 마지막 매수일을 가져와 오늘까지 몇 거래일이 지났는지로 판정한다.
 """
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import requests
 
-COOLDOWN_TRADING_DAYS = 3
+COOLDOWN_TRADING_DAYS = 4
 JOURNAL_ENV_PATH = Path(__file__).resolve().parent.parent / "fabot-trade-journal" / ".env"
 
 

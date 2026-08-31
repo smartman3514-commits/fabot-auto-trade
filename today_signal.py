@@ -1,9 +1,14 @@
 """오늘의 F&G 지수를 확인하고, FABOT 매매 규칙에 따른 신호를 판정합니다.
 
-매매 규칙 (CLAUDE.md 기준):
-- TQQQ 매수: F&G<=25 -> 실탄 25% / F&G<=20 -> 50% / F&G<=15 -> 100% (매수 후 10거래일 쿨다운)
-- TQQQ 매도: F&G>=75 -> 보유분 50% / F&G>=80 -> 잔량 전량 (쿨다운 없음)
-- 커버드콜 추가매수: F&G 35~65(평시) -> 실탄 10% (매수 후 3거래일 쿨다운, 2026-08-22 변경: 20%/10일 -> 10%/3일)
+매매 규칙 (CLAUDE.md 기준, 2026-08-31 분기 재최적화 적용):
+- TQQQ 매수: F&G<=30 -> 실탄 25% / F&G<=25 -> 50% / F&G<=20 -> 100% (매수 후 4거래일 쿨다운)
+- TQQQ 매도: F&G>=72 -> 보유분 50% / F&G>=77 -> 잔량 전량 (쿨다운 없음)
+- 커버드콜 추가매수: F&G 35~65(평시) -> 실탄 10% (매수 후 4거래일 쿨다운)
+
+임계값은 F&G<=30/>=70 구간에서만 AI 재량으로 조정 가능하도록 사용자가 정한 범위 안에서,
+10년 블록부트스트랩 랜덤서치(300개 후보)로 찾은 값이다(코드: fg-index/optimize_fabot_params.py).
+기존 규칙(25/20/15, 75/80, 3일) 대비 평균 CAGR·MDD는 거의 동일하고, 최악의 경우 MDD가
+-68.1% -> -60.4%로 개선됨. 다음 재검토는 2026-11-30(3개월 뒤).
 
 쿨다운 판정은 fabot-trade-journal(Supabase)의 실제 매매 기록을 조회해서 한다.
 CNN F&G 실시간 조회가 실패하면 fg_index.csv의 마지막 값으로 대체한다(오래된 값임을 표시).
@@ -61,15 +66,15 @@ def judge_signal(score: float) -> str:
 
 
 def judge_raw_signal(score: float) -> RawSignal:
-    if score <= 15:
-        return RawSignal("TQQQ 매수 100% (극단적 공포)", "buy_tqqq", TQQQ_TICKER)
     if score <= 20:
-        return RawSignal("TQQQ 매수 50%", "buy_tqqq", TQQQ_TICKER)
+        return RawSignal("TQQQ 매수 100% (극단적 공포)", "buy_tqqq", TQQQ_TICKER)
     if score <= 25:
+        return RawSignal("TQQQ 매수 50%", "buy_tqqq", TQQQ_TICKER)
+    if score <= 30:
         return RawSignal("TQQQ 매수 25%", "buy_tqqq", TQQQ_TICKER)
-    if score >= 80:
+    if score >= 77:
         return RawSignal("TQQQ 매도 전량 (극단적 탐욕)", "sell_tqqq", None)
-    if score >= 75:
+    if score >= 72:
         return RawSignal("TQQQ 매도 50%", "sell_tqqq", None)
     if 35 <= score <= 65:
         return RawSignal(f"커버드콜 추가매수 {COVERED_CALL_ALLOCATION:.0%} (평시)", "buy_covered_call", COVERED_CALL_TICKER)
