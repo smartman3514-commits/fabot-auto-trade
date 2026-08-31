@@ -107,6 +107,26 @@ def _within_domestic_close_window(now: datetime | None = None) -> bool:
     return start <= now <= end
 
 
+# TQQQ(나스닥) 마감(16:00 ET)은 서머타임에 따라 KST로 두 가지다:
+#   - EDT(3월 둘째 일요일 ~ 11월 첫째 일요일, 여름): 16:00 ET = 05:00 KST(다음날)
+#   - EST(그 외, 겨울): 16:00 ET = 06:00 KST(다음날)
+# 이 워크플로우의 크론("50 19 * * 0-5")은 UTC 고정이라 서머타임에 안 맞춰 자동으로
+# 안 움직인다 — 즉 겨울에는 04:50 KST에 실행되는데, 그때는 아직 진짜 마감(06:00)까지
+# 1시간 10분이나 남아있다(장은 열려있어서 기존 "호가 0이면 시장 닫힘" 체크로는
+# 못 거른다). 크론 자체를 계절별로 나누는 대신, 두 마감 시각을 다 포함하도록 창을
+# 넉넉히 잡아서(04:40~06:10) "완전히 엉뚱한 시각"만 걸러낸다 — 겨울엔 마감 정확히
+# 직전이 아니라 그보다 좀 이르게 실행된다는 한계는 남아있음(다음 개선 과제).
+TQQQ_CLOSE_WINDOW_KST = ((4, 40), (6, 10))
+
+
+def _within_tqqq_close_window(now: datetime | None = None) -> bool:
+    now = (now or datetime.now(timezone.utc)).astimezone(KST)
+    (start_h, start_m), (end_h, end_m) = TQQQ_CLOSE_WINDOW_KST
+    start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
+    end = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
+    return start <= now <= end
+
+
 def _not_executed(note: str) -> dict:
     return {"executed": False, "note": note}
 
@@ -158,7 +178,18 @@ async def _execute_covered_call_buy(today_info: dict, dry_run: bool) -> dict:
              "qty": chaser.filled_qty, "price": avg_price}
 
 
+def _tqqq_window_message() -> str:
+    now_kst = datetime.now(timezone.utc).astimezone(KST).strftime("%H:%M")
+    (sh, sm), (eh, em) = TQQQ_CLOSE_WINDOW_KST
+    return f"실행 창({sh:02d}:{sm:02d}~{eh:02d}:{em:02d} KST, 서머타임 포함 마감 전후) 밖 (현재 {now_kst})"
+
+
 async def _execute_tqqq_buy(today_info: dict, dry_run: bool) -> dict:
+    if not _within_tqqq_close_window():
+        msg = _tqqq_window_message()
+        print(f"지금은 {msg} — 건너뜁니다.")
+        return _not_executed(f"{msg}이라 실행하지 않았습니다")
+
     book = _get_overseas_asking_price(today_signal.TQQQ_TICKER, TQQQ_EXCG)
     ref_price = float(book["pask1"])
     if ref_price <= 0:
@@ -207,6 +238,11 @@ async def _execute_tqqq_buy(today_info: dict, dry_run: bool) -> dict:
 
 
 async def _execute_tqqq_sell(today_info: dict, dry_run: bool) -> dict:
+    if not _within_tqqq_close_window():
+        msg = _tqqq_window_message()
+        print(f"지금은 {msg} — 건너뜁니다.")
+        return _not_executed(f"{msg}이라 실행하지 않았습니다")
+
     holding = get_overseas_holding(today_signal.TQQQ_TICKER, TQQQ_EXCG)
     if holding is None or holding["qty"] <= 0:
         print(f"보유 중인 {today_signal.TQQQ_TICKER}가 없어 매도할 수 없습니다.")
