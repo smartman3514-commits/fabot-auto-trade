@@ -1,8 +1,9 @@
 name: FABOT auto-trade (KIS + Kiwoom)
 
 # 로컬 PC의 run_auto_trade_realtime.bat + Task Scheduler(FABOT_KR_Close/FABOT_US_Close)를
-# 그대로 클라우드로 옮긴 것 — 국내장 마감(15:19 KST)과 미국장 마감(04:50 KST) 두 번,
-# 같은 스크립트 두 개(KIS/키움)를 돌린다. PC가 꺼져있어도, 화면이 잠겨있어도 실행된다.
+# 그대로 클라우드로 옮긴 것 — 국내장 마감(15:19 KST)과 미국장 마감(04:50~06:00 KST,
+# 서머타임에 따라 달라짐) 근처에 같은 스크립트 두 개(KIS/키움)를 돌린다. PC가 꺼져있어도,
+# 화면이 잠겨있어도 실행된다.
 
 on:
   schedule:
@@ -12,7 +13,14 @@ on:
     # (인선님이 토요일 아침에 메시지가 안 왔다고 지적, 2026-08-22). 미국 정규장은
     # 금요일까지 열리므로, 그 마감을 알리는 이 크론도 금요일 저녁(UTC)까지 돌아야
     # 한다 — 토요일 저녁(UTC, 다음날 일요일 KST 새벽 몫)은 US 장이 없으니 그대로 뺀다.
-    - cron: "50 19 * * 0-5"  # 04:50 KST 평일+토요일 (미국장 마감 직전, UTC로는 전날 저녁)
+    #
+    # 2026-08-31 수정: 예전엔 04:50 KST에 딱 한 번만 돌았는데, 이 크론은 UTC 고정이라
+    # 서머타임을 못 따라간다 — 실제 마감은 여름(EDT) 05:00 KST, 겨울(EST) 06:00 KST로
+    # 달라진다. 크론을 계절별로 나누는 대신, 두 마감 시각을 둘 다 포함하도록 19:15~21:45
+    # UTC(04:15~06:45 KST) 사이 30분 간격으로 여러 번 돌리고, 실제로 "지금이 오늘의
+    # 진짜 마감 전후 20분인가"는 auto_trade_loop.py의 _within_tqqq_close_window()가
+    # zoneinfo로 정확히 계산해서 그때만 실행한다 — 나머지 실행은 조용히 건너뛴다.
+    - cron: "15,45 19,20,21 * * 0-5"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -92,10 +100,20 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TQQQ_WINDOW_CRON: ${{ github.event.schedule == '15,45 19,20,21 * * 0-5' }}
         run: |
+          # 2026-08-31: TQQQ 마감 크론이 하루 6번으로 늘어나서(서머타임 대응), 그중
+          # "아직 마감 창 아님"으로 조용히 건너뛴 실행까지 매번 알리면 하루 5번씩 쓸데없는
+          # 알림이 간다. 이 크론으로 실행됐는데 실제로 매매가 안 일어났으면 텔레그램
+          # 자체를 보내지 않는다(국내장 크론·수동 실행은 그대로 매번 알림).
+          if [ "$TQQQ_WINDOW_CRON" = "true" ] && ! grep -q "매매기록 저장" kis_result.txt kiwoom_result.txt 2>/dev/null; then
+            echo "TQQQ 마감 창 확인용 실행이고 실제 매매가 없어 텔레그램을 보내지 않습니다."
+            exit 0
+          fi
+
           summarize() {
             if [ -f "$1" ]; then
-              grep -E "총 자산|F&G [0-9]|최종 신호|-> |매매기록 저장" "$1" || echo "(요약할 결과 줄을 못 찾음 — 로그 확인 필요)"
+              grep -E "총 자산|F&G [0-9]|최종 신호|-> |매매기록 저장|건너뜁니다|실행 창\(" "$1" || echo "(요약할 결과 줄을 못 찾음 — 로그 확인 필요)"
             else
               echo "(실행 로그 없음)"
             fi

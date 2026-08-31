@@ -29,6 +29,7 @@ import argparse
 import asyncio
 import sys
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -107,24 +108,33 @@ def _within_domestic_close_window(now: datetime | None = None) -> bool:
     return start <= now <= end
 
 
-# TQQQ(나스닥) 마감(16:00 ET)은 서머타임에 따라 KST로 두 가지다:
-#   - EDT(3월 둘째 일요일 ~ 11월 첫째 일요일, 여름): 16:00 ET = 05:00 KST(다음날)
-#   - EST(그 외, 겨울): 16:00 ET = 06:00 KST(다음날)
-# 이 워크플로우의 크론("50 19 * * 0-5")은 UTC 고정이라 서머타임에 안 맞춰 자동으로
-# 안 움직인다 — 즉 겨울에는 04:50 KST에 실행되는데, 그때는 아직 진짜 마감(06:00)까지
-# 1시간 10분이나 남아있다(장은 열려있어서 기존 "호가 0이면 시장 닫힘" 체크로는
-# 못 거른다). 크론 자체를 계절별로 나누는 대신, 두 마감 시각을 다 포함하도록 창을
-# 넉넉히 잡아서(04:40~06:10) "완전히 엉뚱한 시각"만 걸러낸다 — 겨울엔 마감 정확히
-# 직전이 아니라 그보다 좀 이르게 실행된다는 한계는 남아있음(다음 개선 과제).
-TQQQ_CLOSE_WINDOW_KST = ((4, 40), (6, 10))
+# TQQQ(나스닥) 마감은 항상 16:00 America/New_York다 — 서머타임(EDT/EST) 계산은
+# zoneinfo에게 통째로 맡기고, 우리는 그 지역 시각 16:00만 고정하면 된다(2026-08-31,
+# 이전엔 KST로 04:40~06:10을 하드코딩했는데 그게 서머타임 두 경우를 수동으로 나열한
+# 것이었다 — zoneinfo를 쓰면 그 나열 자체가 필요 없어진다).
+#
+# 이 워크플로우의 크론("15,45 19,20,21 * * 0-5", 아래 auto-trade.yml)은 UTC 고정이라
+# 자체적으로 서머타임을 못 따라가므로, 19:15~21:45 UTC(04:15~06:45 KST) 사이를
+# 30분 간격으로 여러 번 실행되게 해뒀다 — 그중 실제 마감(EDT 05:00 KST 또는 EST
+# 06:00 KST) 앞뒤 20분 안에 들어오는 실행만 여기서 통과시키고, 나머지는 건너뛴다.
+NYSE_TZ = ZoneInfo("America/New_York")
+TQQQ_WINDOW_BEFORE = timedelta(minutes=20)
+TQQQ_WINDOW_AFTER = timedelta(minutes=20)
+
+
+def _today_nyse_close_kst(now_utc: datetime) -> datetime:
+    """오늘 날짜 기준 16:00 America/New_York을 계산해 KST로 변환한다.
+    zoneinfo가 그 날짜의 실제 서머타임 여부를 알아서 반영한다."""
+    local_today = now_utc.astimezone(NYSE_TZ)
+    close_local = local_today.replace(hour=16, minute=0, second=0, microsecond=0)
+    return close_local.astimezone(KST)
 
 
 def _within_tqqq_close_window(now: datetime | None = None) -> bool:
-    now = (now or datetime.now(timezone.utc)).astimezone(KST)
-    (start_h, start_m), (end_h, end_m) = TQQQ_CLOSE_WINDOW_KST
-    start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
-    end = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
-    return start <= now <= end
+    now_utc = now.astimezone(timezone.utc) if now else datetime.now(timezone.utc)
+    close_kst = _today_nyse_close_kst(now_utc)
+    now_kst = now_utc.astimezone(KST)
+    return close_kst - TQQQ_WINDOW_BEFORE <= now_kst <= close_kst + TQQQ_WINDOW_AFTER
 
 
 def _not_executed(note: str) -> dict:
@@ -179,9 +189,13 @@ async def _execute_covered_call_buy(today_info: dict, dry_run: bool) -> dict:
 
 
 def _tqqq_window_message() -> str:
-    now_kst = datetime.now(timezone.utc).astimezone(KST).strftime("%H:%M")
-    (sh, sm), (eh, em) = TQQQ_CLOSE_WINDOW_KST
-    return f"실행 창({sh:02d}:{sm:02d}~{eh:02d}:{em:02d} KST, 서머타임 포함 마감 전후) 밖 (현재 {now_kst})"
+    now_utc = datetime.now(timezone.utc)
+    now_kst = now_utc.astimezone(KST)
+    close_kst = _today_nyse_close_kst(now_utc)
+    return (
+        f"실행 창(오늘 마감 {close_kst.strftime('%H:%M')} KST 전후 20분) 밖 "
+        f"(현재 {now_kst.strftime('%H:%M')})"
+    )
 
 
 async def _execute_tqqq_buy(today_info: dict, dry_run: bool) -> dict:

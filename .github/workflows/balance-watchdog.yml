@@ -1,0 +1,28 @@
+name: FABOT balance history watchdog
+
+# 2026-08-31 추가 — balance_history(fabot-trade-journal, Supabase)가 조용히 며칠씩
+# 안 쌓이는 사고(11일 연속 무기록, 아무도 몰랐음)의 재발 감지용. 매일 아침 한 번,
+# KIS/키움 각각 최근 스냅샷이 너무 오래됐으면 텔레그램으로 경고한다. auto-trade.yml과
+# 같은 시크릿(SUPABASE_*, TELEGRAM_*)을 재사용하므로 별도 설정이 필요 없다.
+
+on:
+  schedule:
+    - cron: "0 0 * * *"  # 매일 09:00 KST
+  workflow_dispatch:
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Check balance_history freshness
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python balance_watchdog.py
