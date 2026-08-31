@@ -28,6 +28,7 @@ overseas_order_executor.OverseasChaseOrder를 쓴다. 체결되면 fabot-trade-j
 import argparse
 import asyncio
 import sys
+from datetime import datetime, timedelta, timezone
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -88,11 +89,35 @@ def _compute_covered_call_qty(cash: int) -> int:
     return int(budget // reference_price)
 
 
+KST = timezone(timedelta(hours=9))
+# 커버드콜(472150, KOSPI)은 국내장 종가 기준으로 매매하기로 확정된 원칙(사용자 지정,
+# 2026-08-31)이라, 실행 시각이 이 창을 벗어나면 사유를 몰라도 일단 건너뛴다. 2026-08-28에
+# 예정에 없던 시각(12:53 KST)에 커버드콜 매수가 실행된 사례가 실제로 있었음 — 원인은
+# 못 찾았지만(로컬 작업 스케줄러에도 없었음), 언제 실행되든 이 가드가 있으면 잘못된
+# 시각의 매수 자체를 막을 수 있다. 실행 창은 15:19~15:30이지만, 스케줄 시작 지연을
+# 고려해 앞뒤로 여유를 둔다.
+DOMESTIC_CLOSE_WINDOW_KST = ((15, 15), (15, 35))
+
+
+def _within_domestic_close_window(now: datetime | None = None) -> bool:
+    now = (now or datetime.now(timezone.utc)).astimezone(KST)
+    (start_h, start_m), (end_h, end_m) = DOMESTIC_CLOSE_WINDOW_KST
+    start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
+    end = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
+    return start <= now <= end
+
+
 def _not_executed(note: str) -> dict:
     return {"executed": False, "note": note}
 
 
 async def _execute_covered_call_buy(today_info: dict, dry_run: bool) -> dict:
+    if not _within_domestic_close_window():
+        now_kst = datetime.now(timezone.utc).astimezone(KST).strftime("%H:%M")
+        (sh, sm), (eh, em) = DOMESTIC_CLOSE_WINDOW_KST
+        print(f"지금은 {now_kst} KST — 국내장 종가 실행 창({sh:02d}:{sm:02d}~{eh:02d}:{em:02d})이 아니라 건너뜁니다.")
+        return _not_executed(f"실행 창({sh:02d}:{sm:02d}~{eh:02d}:{em:02d} KST) 밖이라 실행하지 않았습니다 (현재 {now_kst})")
+
     cash = get_cash_balance()
     qty = _compute_covered_call_qty(cash)
     print(f"실탄(예수금) {cash:,}원 -> {COVERED_CALL_ALLOCATION:.0%} 배분, 주문수량 {qty}주 ({COVERED_CALL_STOCK_CODE})")

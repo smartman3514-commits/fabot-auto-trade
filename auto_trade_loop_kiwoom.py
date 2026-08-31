@@ -25,6 +25,7 @@ TQQQ(해외)는 이번 범위에서 뺐다 — 키움 모의투자 해외 잔고
 import argparse
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -49,6 +50,21 @@ COVERED_CALL_TRADE_KEY = "TIGER 배당커버드콜액티브(472150)"
 COVERED_CALL_ALLOCATION = today_signal.COVERED_CALL_ALLOCATION
 
 KIWOOM_ACCOUNT_LABEL = "키움 모의투자"
+
+
+KST = timezone(timedelta(hours=9))
+# auto_trade_loop.py(KIS)와 같은 이유(2026-08-31) — 국내장이 열려 있는 시간대(09:00~15:30)라면
+# 호가가 정상적으로 잡혀서 기존의 "호가 0 = 정규장 아님" 체크만으로는 15:19~15:30 종가 실행
+# 창을 벗어난 시각(예: 2026-08-28 12:53 KST 실제 사례)의 매수를 막지 못한다.
+DOMESTIC_CLOSE_WINDOW_KST = ((15, 15), (15, 35))
+
+
+def _within_domestic_close_window(now: datetime | None = None) -> bool:
+    now = (now or datetime.now(timezone.utc)).astimezone(KST)
+    (start_h, start_m), (end_h, end_m) = DOMESTIC_CLOSE_WINDOW_KST
+    start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
+    end = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
+    return start <= now <= end
 
 
 def _not_executed(note: str) -> dict:
@@ -206,6 +222,12 @@ class KiwoomChaseOrder:
 
 
 def execute_covered_call_buy(today_info: dict, dry_run: bool) -> dict:
+    if not _within_domestic_close_window():
+        now_kst = datetime.now(timezone.utc).astimezone(KST).strftime("%H:%M")
+        (sh, sm), (eh, em) = DOMESTIC_CLOSE_WINDOW_KST
+        print(f"지금은 {now_kst} KST — 국내장 종가 실행 창({sh:02d}:{sm:02d}~{eh:02d}:{em:02d})이 아니라 건너뜁니다.")
+        return _not_executed(f"실행 창({sh:02d}:{sm:02d}~{eh:02d}:{em:02d} KST) 밖이라 실행하지 않았습니다 (현재 {now_kst})")
+
     cash_data = get_domestic_cash_balance(mode="demo")
     cash = int(cash_data["ord_alow_amt"])
 
