@@ -118,7 +118,7 @@ jobs:
               echo "(실행 로그 없음)"
             fi
           }
-          rules_line=$(python -c "import today_signal as t, cooldown as cd; b=t.BUY_THRESHOLDS; s=t.SELL_THRESHOLDS; print(f'매수 {b[2]}/{b[1]}/{b[0]} (25%/50%/100%) · 매도 {s[0]}/{s[1]} (50%/전량) · 쿨다운 {cd.COOLDOWN_TRADING_DAYS}일')")
+          rules_line=$(python -c "import today_signal as t, cooldown as cd; b=t.BUY_THRESHOLDS; s=t.SELL_THRESHOLDS; c=t.COVERED_CALL_ZONE; print(f'[TQQQ] 매수 {b[2]}/{b[1]}/{b[0]} (25%/50%/100%) · 매도 {s[0]}/{s[1]} (50%/전량) · [커버드콜] F&G {c[0]}~{c[1]} 시 {t.COVERED_CALL_ALLOCATION:.0%} · 쿨다운 {cd.COOLDOWN_TRADING_DAYS}일(공통)')")
 
           {
             echo "🤖 FABOT 자동매매 실행 ($(date -u -d '+9 hours' '+%Y-%m-%d %H:%M') KST)"

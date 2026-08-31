@@ -49,6 +49,7 @@ COVERED_CALL_ALLOCATION = 0.10  # 2026-08-22, 20%에서 변경(10년 시뮬레�
 # 2026-08-31 분기 재최적화 1차 결과 적용(기존 25/20/15, 75/80에서 변경).
 BUY_THRESHOLDS = (20, 25, 30)   # 이하일 때 각각 100%/50%/25% 매수
 SELL_THRESHOLDS = (72, 77)      # 이상일 때 각각 50%/전량 매도
+COVERED_CALL_ZONE = (35, 65)    # 이 구간(평시)이면 커버드콜 추가매수
 # 실제 매수 종목은 이 티커가 아니라 472150(TIGER 배당커버드콜액티브)로 확정됨(2026-07-23) —
 # 486290은 분배금이 전부 배당소득세로 잡혀 세금상 불리해서 사용자가 의도적으로 바꾼 것.
 # 신호 판정/쿨다운 키는 이 상수(486290 쪽 이름)를 그대로 쓰고, 실행 종목코드 매핑은
@@ -84,7 +85,8 @@ def judge_raw_signal(score: float) -> RawSignal:
         return RawSignal("TQQQ 매도 전량 (극단적 탐욕)", "sell_tqqq", None)
     if score >= s50:
         return RawSignal("TQQQ 매도 50%", "sell_tqqq", None)
-    if 35 <= score <= 65:
+    cc_lo, cc_hi = COVERED_CALL_ZONE
+    if cc_lo <= score <= cc_hi:
         return RawSignal(f"커버드콜 추가매수 {COVERED_CALL_ALLOCATION:.0%} (평시)", "buy_covered_call", COVERED_CALL_TICKER)
     return RawSignal("대기 (매수/매도 조건 밖)", "wait", None)
 
