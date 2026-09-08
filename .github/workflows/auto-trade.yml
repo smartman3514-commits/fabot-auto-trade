@@ -21,6 +21,13 @@ on:
     # 진짜 마감 전후 20분인가"는 auto_trade_loop.py의 _within_tqqq_close_window()가
     # zoneinfo로 정확히 계산해서 그때만 실행한다 — 나머지 실행은 조용히 건너뛴다.
     - cron: "15,45 19,20,21 * * 0-5"
+  # 2026-09-07: GitHub Actions 자체 schedule이 몇 시간씩 밀리거나 아예 건너뛰는
+  # 문제가 실제로 관측됨(06:19 UTC 예정이 12:34, 21:xx, 23:xx UTC에 뒤늦게 실행됨).
+  # update-fg.yml에서 이미 검증된 방법(cron-job.org → repository_dispatch)을 그대로
+  # 적용한다. schedule은 혹시 몰라 그대로 남겨 두되(밀리더라도 안 도는 것보다 낫다),
+  # 실제 정시 실행은 이 repository_dispatch가 담당한다.
+  repository_dispatch:
+    types: [auto-trade]
   workflow_dispatch:
     inputs:
       dry_run:
@@ -100,7 +107,10 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TQQQ_WINDOW_CRON: ${{ github.event.schedule == '15,45 19,20,21 * * 0-5' }}
+          # 2026-09-07: repository_dispatch로 오면 github.event.schedule이 비어 있어서
+          # 위 문자열 비교만으로는 "미국장용 트리거인지"를 알 수 없다. cron-job.org가
+          # client_payload.kind: "tqqq"를 실어 보내는 경우도 같이 인정한다.
+          TQQQ_WINDOW_CRON: ${{ github.event.schedule == '15,45 19,20,21 * * 0-5' || github.event.client_payload.kind == 'tqqq' }}
         run: |
           # 2026-08-31: TQQQ 마감 크론이 하루 6번으로 늘어나서(서머타임 대응), 그중
           # "아직 마감 창 아님"으로 조용히 건너뛴 실행까지 매번 알리면 하루 5번씩 쓸데없는
