@@ -80,7 +80,7 @@ def check_cooldown(ticker: str, today: date | None = None, account: str | None =
         return {
             "ok": False,
             "in_cooldown": True,
-            "reason": f"매매기록 조회 실패({exc}) — 안전하게 쿨다운 중으로 처리",
+            "reason": f"매매기록 조회 실패({exc}) — 안전하게 대기 기간 중으로 처리",
             "last_buy_date": None,
             "elapsed_trading_days": None,
         }
@@ -101,7 +101,7 @@ def check_cooldown(ticker: str, today: date | None = None, account: str | None =
         "in_cooldown": in_cooldown,
         "reason": (
             f"마지막 매수 {last_buy} 이후 {elapsed}거래일 경과 "
-            f"({'쿨다운 중' if in_cooldown else '쿨다운 해제'}, 기준 {COOLDOWN_TRADING_DAYS}거래일)"
+            f"({'대기 기간 중' if in_cooldown else '대기 기간 종료'}, 기준 {COOLDOWN_TRADING_DAYS}거래일)"
         ),
         "last_buy_date": last_buy,
         "elapsed_trading_days": elapsed,

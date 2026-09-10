@@ -230,7 +230,7 @@ def apply_cooldown(raw: RawSignal, cooldown_key: str | None = None, account: str
     cd = check_cooldown(cooldown_key or raw.ticker, account=account)
     if cd["in_cooldown"]:
         return {
-            "final_label": f"대기 (쿨다운) — 조건은 '{raw.label}'이지만 {cd['reason']}",
+            "final_label": f"대기 기간 중 — 조건은 '{raw.label}'이지만 {cd['reason']}",
             "cooldown": cd,
         }
     return {"final_label": raw.label, "cooldown": cd}

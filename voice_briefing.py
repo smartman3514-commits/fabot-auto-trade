@@ -28,7 +28,7 @@ def build_briefing_text(today_info: dict, raw, result: dict, outcome: dict) -> s
     if raw.action == "wait":
         lines.append("매수·매도 조건 밖이라 대기합니다.")
     elif result["cooldown"] and result["cooldown"]["in_cooldown"]:
-        lines.append(f"쿨다운 중이라 실행하지 않았습니다. {result['cooldown']['reason']}입니다.")
+        lines.append(f"매매 후 대기 기간이라 실행하지 않았습니다. {result['cooldown']['reason']}입니다.")
     elif outcome["executed"]:
         action_word = "매수" if outcome["action"] == "buy" else "매도"
         lines.append(
