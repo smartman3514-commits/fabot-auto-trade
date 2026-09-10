@@ -158,3 +158,20 @@ jobs:
           resp.raise_for_status()
           print("텔레그램 알림 전송 완료")
           PY
+
+      # 스케줄 감시(워치독)용 신호 — 매매/발송 성공 여부와 무관하게 "워크플로가 돌긴
+      # 돌았다"는 것만 매번 남긴다(2026-09-10). 이게 실패해도 절대 이 잡을 실패시키지
+      # 않는다(|| echo) — 감시 기록 하나 때문에 실제 매매 실행이 "실패"로 표시되면 안 됨.
+      - name: Record heartbeat (schedule watchdog)
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/schedule_heartbeats" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d '{"job":"auto_trade_workflow"}' \
+            || echo "heartbeat 기록 실패 — 무시하고 계속 진행"

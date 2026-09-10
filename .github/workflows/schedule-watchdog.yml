@@ -1,0 +1,32 @@
+name: FABOT schedule watchdog
+
+# 브리핑(하루 4번)·자동매매 루프가 조용히 안 도는 걸 감시한다. auto-trade.yml/
+# briefing-agent가 남기는 schedule_heartbeats 기록을 4시간마다 확인해서, 예상보다
+# 오래 조용하면 텔레그램으로 경고한다(2026-09-10). 감시 대상과 다른 인프라(GitHub
+# Actions 자체 schedule)에서 돌려서, Render나 cron-job.org가 죽어도 이 감시는 살아있게 함.
+
+on:
+  schedule:
+    - cron: "15 */4 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Check schedules
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python schedule_watchdog.py
