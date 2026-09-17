@@ -33,6 +33,9 @@ def _load_journal_env() -> dict:
     return env
 
 
+_TIER_LABEL = {1: "25%", 2: "50%", 3: "100%"}
+
+
 def _trading_days_between(start: date, end: date) -> int:
     """start(포함) 다음날부터 end(포함)까지의 평일 수. 공휴일은 반영하지 않는다."""
     days = 0
@@ -44,14 +47,14 @@ def _trading_days_between(start: date, end: date) -> int:
     return days
 
 
-def get_last_buy_date(ticker: str, account: str | None = None) -> date | None:
-    """account를 안 넘기면 그 종목의 모든 계좌 매수기록을 다 본다. 2026-08-14부터
+def get_last_buy(ticker: str, account: str | None = None) -> dict | None:
+    """마지막 매수의 날짜와 그때의 F&G 점수. account를 안 넘기면 그 종목의 모든 계좌 매수기록을 다 본다. 2026-08-14부터
     KIS/키움 두 계좌가 같은 종목(472150)을 각자 독립적으로 자동매매하게 되면서,
     account까지 같이 필터링해야 한 계좌 매수가 다른 계좌 쿨다운에 영향을 안 준다."""
     env = _load_journal_env()
     url = f"{env['SUPABASE_URL']}/rest/v1/trades"
     params = {
-        "select": "trade_date",
+        "select": "trade_date,fg_score",
         "ticker": f"eq.{ticker}",
         "action": "eq.buy",
         "order": "trade_date.desc",
@@ -68,18 +71,40 @@ def get_last_buy_date(ticker: str, account: str | None = None) -> date | None:
     rows = response.json()
     if not rows:
         return None
-    return datetime.strptime(rows[0]["trade_date"], "%Y-%m-%d").date()
+    return {
+        "date": datetime.strptime(rows[0]["trade_date"], "%Y-%m-%d").date(),
+        "fg_score": rows[0].get("fg_score"),
+    }
 
 
-def check_cooldown(ticker: str, today: date | None = None, account: str | None = None) -> dict:
-    """쿨다운 상태를 판정. DB 조회 실패 시 안전하게 '쿨다운 중'으로 취급(보수적 fail-safe)."""
+def get_last_buy_date(ticker: str, account: str | None = None) -> date | None:
+    """예전 이름 그대로 쓰는 호출부(대시보드 등)를 위해 남겨 둔 얇은 래퍼."""
+    last = get_last_buy(ticker, account=account)
+    return last["date"] if last else None
+
+
+def check_cooldown(ticker: str, today: date | None = None, account: str | None = None,
+                   current_tier: int | None = None) -> dict:
+    """쿨다운 상태를 판정. DB 조회 실패 시 안전하게 '쿨다운 중'으로 취급(보수적 fail-safe).
+
+    current_tier: 지금 신호의 매수 단계(today_signal.buy_tier). 넘기면 **단계 경계를
+    넘어간 그 한 번에 한해** 대기 기간을 해제한다 — F&G 29(25% 단계)에 샀는데 다음날
+    24(50% 단계)로 떨어지면, 대기 기간이 남아 있어도 그 매수는 한다.
+
+    "공포가 깊으면 계속 산다"는 뜻이 **아니다**(2026-09-18 사용자가 명확히 함):
+      - 같은 단계 안(29에 사고 28) → 해제 안 됨, 대기 기간 그대로
+      - 얕아진 경우(24에 사고 29)  → 해제 안 됨
+      - 경계를 넘을 때(29에 사고 24, 또는 24에 사고 19) → 그 한 번만 해제
+    새 단계에서 사고 나면 그 매수가 새 기준이 되어 다시 대기 기간이 걸린다.
+    """
     today = today or date.today()
     try:
-        last_buy = get_last_buy_date(ticker, account=account)
+        last_buy = get_last_buy(ticker, account=account)
     except Exception as exc:
         return {
             "ok": False,
             "in_cooldown": True,
+            "escalated": False,
             "reason": f"매매기록 조회 실패({exc}) — 안전하게 대기 기간 중으로 처리",
             "last_buy_date": None,
             "elapsed_trading_days": None,
@@ -89,21 +114,43 @@ def check_cooldown(ticker: str, today: date | None = None, account: str | None =
         return {
             "ok": True,
             "in_cooldown": False,
+            "escalated": False,
             "reason": "이전 매수 기록 없음",
             "last_buy_date": None,
             "elapsed_trading_days": None,
         }
 
-    elapsed = _trading_days_between(last_buy, today)
+    last_date = last_buy["date"]
+    elapsed = _trading_days_between(last_date, today)
     in_cooldown = elapsed < COOLDOWN_TRADING_DAYS
+    reason = (
+        f"마지막 매수 {last_date} 이후 {elapsed}거래일 경과 "
+        f"({'대기 기간 중' if in_cooldown else '대기 기간 종료'}, 기준 {COOLDOWN_TRADING_DAYS}거래일)"
+    )
+
+    escalated = False
+    if in_cooldown and current_tier is not None:
+        import today_signal  # 순환 import를 피하려고 여기서만 부른다
+
+        last_score = last_buy.get("fg_score")
+        last_tier = today_signal.buy_tier(float(last_score)) if last_score is not None else None
+        if last_tier is None:
+            reason += " / 지난 매수의 F&G를 몰라 단계 비교 불가 — 대기 기간 유지"
+        elif current_tier > last_tier:
+            escalated = True
+            in_cooldown = False
+            reason = (
+                f"매수 단계 상향({_TIER_LABEL[last_tier]} -> {_TIER_LABEL[current_tier]}, "
+                f"지난 매수 F&G {float(last_score):.0f}) — 대기 기간 해제. " + reason
+            )
+
     return {
         "ok": True,
         "in_cooldown": in_cooldown,
-        "reason": (
-            f"마지막 매수 {last_buy} 이후 {elapsed}거래일 경과 "
-            f"({'대기 기간 중' if in_cooldown else '대기 기간 종료'}, 기준 {COOLDOWN_TRADING_DAYS}거래일)"
-        ),
-        "last_buy_date": last_buy,
+        "escalated": escalated,
+        "reason": reason,
+        "last_buy_date": last_date,
+        "last_buy_fg_score": last_buy.get("fg_score"),
         "elapsed_trading_days": elapsed,
     }
 

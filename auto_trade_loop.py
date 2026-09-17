@@ -314,7 +314,8 @@ async def main() -> None:
     today_info = today_signal.get_cnn_score() if args.realtime else today_signal.get_today_score()
     raw = today_signal.judge_raw_signal(today_info["score"])
     cooldown_key = COVERED_CALL_TRADE_KEY if raw.action == "buy_covered_call" else None
-    result = today_signal.apply_cooldown(raw, cooldown_key=cooldown_key, account=KIS_ACCOUNT_LABEL)
+    result = today_signal.apply_cooldown(raw, cooldown_key=cooldown_key, account=KIS_ACCOUNT_LABEL,
+                                         score=today_info["score"])
     today_signal.log_result(today_info, raw, result)
 
     print("=== 오늘의 F&G 신호 ===")

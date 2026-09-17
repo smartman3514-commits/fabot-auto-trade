@@ -67,6 +67,24 @@ class RawSignal:
     ticker: str | None
 
 
+def buy_tier(score: float) -> int | None:
+    """매수 단계. 3 = 100%(극단적 공포), 2 = 50%, 1 = 25%, None = 매수 구간 아님.
+
+    대기 기간 해제는 **단계를 넘어가는 그 한 번**에만 적용된다(2026-09-18 사용자 규칙).
+    "공포가 깊으면 계속 산다"가 아니다 — 같은 단계 안에서는 대기 기간이 그대로 지켜지고,
+    30 -> 25처럼 경계를 넘을 때만 그 한 번의 매수를 위해 해제된다. 새 단계에서 사고 나면
+    그 매수가 새 기준이 되어 다시 대기 기간이 걸린다.
+    """
+    t100, t50, t25 = BUY_THRESHOLDS
+    if score <= t100:
+        return 3
+    if score <= t50:
+        return 2
+    if score <= t25:
+        return 1
+    return None
+
+
 def judge_signal(score: float) -> str:
     """live_fg.py / export_dashboard_data.py가 쓰는 기존 API (라벨 문자열만 필요, 쿨다운 미반영)."""
     return judge_raw_signal(score).label
@@ -216,10 +234,14 @@ def get_realtime_score() -> dict:
         return fallback
 
 
-def apply_cooldown(raw: RawSignal, cooldown_key: str | None = None, account: str | None = None) -> dict:
+def apply_cooldown(raw: RawSignal, cooldown_key: str | None = None, account: str | None = None,
+                   score: float | None = None) -> dict:
     """cooldown_key: 실제 매매기록에 쓰인 키가 raw.ticker(신호상 명목 종목명)와 다를 때
     (예: 커버드콜은 신호상 486290 이름을 쓰지만 실제로는 472150을 매매함) 호출부가
     실제 매매기록 조회용 키를 넘긴다. 안 넘기면 raw.ticker를 그대로 쓴다.
+
+    score: 지금 F&G 점수. 넘기면 TQQQ 매수 단계(25%/50%/100%)를 계산해서, 지난 매수보다
+    더 깊은 단계면 대기 기간을 해제한다(2026-09-18). 안 넘기면 예전과 똑같이 동작한다.
 
     account: 이 계좌의 매매기록만 놓고 쿨다운을 판정한다. 2026-08-14부터 KIS와 키움이
     각자 독립적으로 같은 종목을 자동매매하게 되어서, account를 안 넘기면 한 계좌의
@@ -227,7 +249,10 @@ def apply_cooldown(raw: RawSignal, cooldown_key: str | None = None, account: str
     if raw.action not in ("buy_tqqq", "buy_covered_call"):
         return {"final_label": raw.label, "cooldown": None}
 
-    cd = check_cooldown(cooldown_key or raw.ticker, account=account)
+    # TQQQ만 단계(25%/50%/100%)가 있다 — 단계가 깊어지면 대기 기간을 해제한다.
+    # 커버드콜은 단계가 없어서(평시 10% 하나뿐) current_tier를 넘기지 않는다.
+    current_tier = buy_tier(score) if raw.action == "buy_tqqq" and score is not None else None
+    cd = check_cooldown(cooldown_key or raw.ticker, account=account, current_tier=current_tier)
     if cd["in_cooldown"]:
         return {
             "final_label": f"대기 기간 중 — 조건은 '{raw.label}'이지만 {cd['reason']}",
