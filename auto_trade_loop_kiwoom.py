@@ -484,9 +484,17 @@ class KiwoomOverseasChaseOrder:
                 self._refresh_fill()
 
 
-def _tqqq_preflight(today_info: dict) -> tuple[float, float] | dict:
-    """실행 창·호가 확인. 통과하면 (기준가, 주문가능달러), 아니면 _not_executed(...)."""
-    if not _within_tqqq_close_window():
+def _tqqq_preflight(today_info: dict, ignore_window: bool = False) -> tuple[float, float] | dict:
+    """실행 창·호가 확인. 통과하면 (기준가, 주문가능달러), 아니면 _not_executed(...).
+
+    ignore_window: 마감 실행 창 가드를 이번 실행에 한해 건너뛴다. 기본 원칙은 "마감에
+    산다"이지만, 놓친 신호를 장중에 따라가야 할 때 사용자가 명시적으로 켜는 용도다
+    (2026-09-18: 키움이 TQQQ를 아예 실행하지 않아 신호를 놓친 건을 당일 장중에 복구).
+    자동 스케줄에는 절대 기본으로 켜지 않는다.
+    """
+    if ignore_window:
+        print("⚠ --ignore-window: 마감 실행 창 가드를 건너뜁니다(사용자가 명시적으로 지정).")
+    elif not _within_tqqq_close_window():
         msg = _tqqq_window_message()
         print(f"지금은 {msg} — 건너뜁니다.")
         return _not_executed(f"{msg}이라 실행하지 않았습니다")
@@ -499,8 +507,8 @@ def _tqqq_preflight(today_info: dict) -> tuple[float, float] | dict:
     return ref_price, _overseas_usd_cash()
 
 
-def execute_tqqq_buy(today_info: dict, dry_run: bool) -> dict:
-    pre = _tqqq_preflight(today_info)
+def execute_tqqq_buy(today_info: dict, dry_run: bool, ignore_window: bool = False) -> dict:
+    pre = _tqqq_preflight(today_info, ignore_window)
     if isinstance(pre, dict):
         return pre
     ref_price, cash = pre
@@ -546,8 +554,8 @@ def execute_tqqq_buy(today_info: dict, dry_run: bool) -> dict:
             "qty": chaser.filled_qty, "price": holding["avg_price"]}
 
 
-def execute_tqqq_sell(today_info: dict, dry_run: bool) -> dict:
-    pre = _tqqq_preflight(today_info)
+def execute_tqqq_sell(today_info: dict, dry_run: bool, ignore_window: bool = False) -> dict:
+    pre = _tqqq_preflight(today_info, ignore_window)
     if isinstance(pre, dict):
         return pre
 
@@ -655,6 +663,11 @@ def main() -> None:
         "--realtime", action="store_true",
         help="전일 확정 종가 대신 지금 이 순간의 실시간 계산값을 쓴다 (마감 직전 스케줄 실행용)",
     )
+    parser.add_argument(
+        "--ignore-window", action="store_true",
+        help="TQQQ 마감 실행 창 가드를 건너뛴다. 놓친 신호를 장중에 따라갈 때만 쓴다 — "
+             "자동 스케줄에는 절대 기본으로 켜지 말 것",
+    )
     args = parser.parse_args()
 
     today_info = today_signal.get_cnn_score() if args.realtime else today_signal.get_today_score()
@@ -682,9 +695,9 @@ def main() -> None:
     elif raw.action == "buy_covered_call":
         outcome = execute_covered_call_buy(today_info, args.dry_run)
     elif raw.action == "buy_tqqq":
-        outcome = execute_tqqq_buy(today_info, args.dry_run)
+        outcome = execute_tqqq_buy(today_info, args.dry_run, args.ignore_window)
     elif raw.action == "sell_tqqq":
-        outcome = execute_tqqq_sell(today_info, args.dry_run)
+        outcome = execute_tqqq_sell(today_info, args.dry_run, args.ignore_window)
     else:
         print(f"-> 알 수 없는 액션({raw.action}) — 실행 안 함.")
 
