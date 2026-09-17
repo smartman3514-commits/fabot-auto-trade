@@ -1,0 +1,24 @@
+name: Test Kiwoom overseas (US) demo API from cloud — read only
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # 주문은 내지 않는다 — 시세·예수금·잔고 조회만 한다.
+      - name: Read-only overseas API check
+        env:
+          KIWOOM_PAPER_OVERSEAS_APP_KEY: ${{ secrets.KIWOOM_PAPER_OVERSEAS_APP_KEY }}
+          KIWOOM_PAPER_OVERSEAS_APP_SECRET: ${{ secrets.KIWOOM_PAPER_OVERSEAS_APP_SECRET }}
+        run: python test_kiwoom_overseas_cloud.py
