@@ -35,7 +35,15 @@ def main() -> None:
 
     safe_price = round(bid * 0.80, 2)  # 20% 아래 — 체결될 리 없다
     print(f"[1/3] 매수 1주 접수 (현재 매수1호가 ${bid:.2f} -> 주문가 ${safe_price:.2f}, 체결 안 되게 낮게)")
-    placed = place_overseas_order(TICKER, "buy", 1, price=safe_price, exchange=EXCG, mode="demo")
+    # 장이 닫혀 있어도 호가는 마지막 값이 그대로 내려온다(2026-09-18 실측) — 그래서 위의
+    # "호가 0" 검사만으로는 장종료를 못 걸러내고, 주문 단계에서 RC4058로 거절당한다.
+    try:
+        placed = place_overseas_order(TICKER, "buy", 1, price=safe_price, exchange=EXCG, mode="demo")
+    except RuntimeError as exc:
+        if "RC4058" in str(exc) or "장종료" in str(exc):
+            print("  모의투자 장종료 상태입니다 — 미국 정규장(22:30~05:00 KST)에 다시 실행하세요.")
+            sys.exit(1)
+        raise
     if placed.get("return_code") != 0:
         print(f"  실패: {placed.get('return_msg')}")
         sys.exit(1)
