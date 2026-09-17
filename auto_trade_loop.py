@@ -63,10 +63,16 @@ KIS_ACCOUNT_LABEL = "KIS 모의투자"  # 매매기록의 account 필드 — 키
 
 TQQQ_EXCG = "NASD"
 
-# CLAUDE.md 확정 규칙: 매수(TQQQ) F&G<=25 -> 25% / <=20 -> 50% / <=15 -> 100%
-_TQQQ_BUY_ALLOCATION_BY_SCORE = [(15, 1.0), (20, 0.5), (25, 0.25)]
-# 매도(TQQQ) F&G>=75 -> 보유분 50% / >=80 -> 전량
-_TQQQ_SELL_FRACTION_BY_SCORE = [(80, 1.0), (75, 0.5)]
+# 임계값은 today_signal.py의 BUY_THRESHOLDS/SELL_THRESHOLDS를 그대로 따른다 — 여기 따로
+# 하드코딩해뒀던 옛 값(15/20/25, 75/80)이 2026-08-31 임계값 변경(20/25/30, 72/77) 때 같이
+# 안 바뀌어서, F&G 26~30점 구간에서 신호는 "매수 25%"로 정확히 잡히고도 배분 비율 계산에서
+# ValueError로 조용히 실패해 실제 매수가 여러 번 누락되는 사고가 있었다(2026-09-17 발견).
+# 두 파일에 같은 상수를 따로 들고 있으면 이 사고가 반드시 재발하므로, 이제 한 곳(today_signal)
+# 만 고치면 여기도 같이 바뀌도록 import해서 쓴다.
+_t100, _t50, _t25 = today_signal.BUY_THRESHOLDS
+_TQQQ_BUY_ALLOCATION_BY_SCORE = [(_t100, 1.0), (_t50, 0.5), (_t25, 0.25)]
+_s50, _s100 = today_signal.SELL_THRESHOLDS
+_TQQQ_SELL_FRACTION_BY_SCORE = [(_s100, 1.0), (_s50, 0.5)]
 
 
 def _tqqq_buy_allocation(score: float) -> float:
