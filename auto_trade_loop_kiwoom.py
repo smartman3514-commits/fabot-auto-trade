@@ -11,10 +11,22 @@
 추격주문 상태 머신을 만들었다. 실시간 웹소켓이 없어서 REST 폴링 방식(해외판과 같은
 아이디어)으로 가격 변화를 감지한다.
 
-TQQQ(해외)는 이번 범위에서 뺐다 — 키움 모의투자 해외 잔고 조회(ust21070)가 종목코드
-없이는 "계좌 전체" 조회가 안 되는 걸 확인해서(2026-08-14), 국내 커버드콜만 다룬다.
+**2026-09-18 업데이트 — TQQQ(해외) 자동실행 연결**: 2026-08-14에는 해외 잔고 조회(ust21070)가
+"계좌 전체" 조회를 지원하지 않는다는 이유로 TQQQ를 범위에서 뺐었다. 그런데 실제 원인은
+stk_cd(종목코드)가 **선택이 아니라 필수**였던 것이고, 종목코드를 넣으면 정상 조회된다
+(2026-09-18 실측). 그 사이 KIS 모의는 TQQQ를 매수하는데 키움 모의는 신호만 찍고 넘어가는
+상태가 계속됐다 — 2026-09-18 04:45 KST F&G 29점 매수 신호 때 사용자가 발견.
 
-필요 환경변수: KIWOOM_PAPER_APP_KEY, KIWOOM_PAPER_APP_SECRET
+응답 필드는 전부 실측으로 확인한 것만 쓴다(2026-09-18):
+  - 호가(usa20101)  : sel_1bid~sel_10bid / sel_1bid_req~, buy_1bid~ / buy_1bid_req~
+  - 예수금(ust21160): d0_usd_fx_entr 가 주문가능 달러
+  - 잔고(ust21070)  : result_list[].poss_qty(보유수량), .frgn_stk_book_uv(평균단가)
+미체결(ust21050)의 필드명만은 조회 시점에 미체결 주문이 하나도 없어 확인하지 못했다 —
+_remaining_from_unfilled()가 알려진 후보 키로 찾아보고, 못 찾으면 **조용히 "전량 체결"로
+넘어가지 않고 실제 키 목록을 찍으며 예외를 낸다**(체결 수량을 잘못 기록하는 것보다 낫다).
+
+필요 환경변수: KIWOOM_PAPER_APP_KEY, KIWOOM_PAPER_APP_SECRET (국내)
+              KIWOOM_PAPER_OVERSEAS_APP_KEY, KIWOOM_PAPER_OVERSEAS_APP_SECRET (해외)
 필요 파일: ../fabot-trade-journal/.env (SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 사용법:
@@ -26,6 +38,7 @@ import argparse
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -35,12 +48,19 @@ import voice_briefing
 from cooldown import log_trade
 from kiwoom_client import (
     amend_domestic_order,
+    amend_overseas_order,
     cancel_domestic_order,
+    cancel_overseas_order,
     get_domestic_cash_balance,
     get_domestic_holdings,
     get_domestic_orderbook,
     get_domestic_unfilled_orders,
+    get_overseas_balance,
+    get_overseas_cash_balance,
+    get_overseas_orderbook,
+    get_overseas_unfilled_orders,
     place_domestic_order,
+    place_overseas_order,
 )
 
 COVERED_CALL_STOCK_CODE = "472150"
@@ -50,6 +70,32 @@ COVERED_CALL_TRADE_KEY = "TIGER 배당커버드콜액티브(472150)"
 COVERED_CALL_ALLOCATION = today_signal.COVERED_CALL_ALLOCATION
 
 KIWOOM_ACCOUNT_LABEL = "키움 모의투자"
+
+TQQQ_TICKER = today_signal.TQQQ_TICKER
+TQQQ_EXCG = "ND"  # 키움 거래소 구분(나스닥) — KIS의 "NASD"와 표기가 다르다
+
+# 임계값은 절대 여기 적지 않고 today_signal 하나만 본다. 같은 상수를 두 파일에 따로 들고
+# 있다가 2026-08-31 임계값 변경이 한쪽에만 반영되어, F&G 26~30 구간에서 신호는 정확히
+# 잡히고도 배분 계산에서 ValueError로 조용히 실패해 실제 매수가 누락된 사고가 있었다
+# (2026-09-17 발견, auto_trade_loop.py의 같은 주석 참고). 그 사고를 여기서 반복하지 않는다.
+_t100, _t50, _t25 = today_signal.BUY_THRESHOLDS
+_TQQQ_BUY_ALLOCATION_BY_SCORE = [(_t100, 1.0), (_t50, 0.5), (_t25, 0.25)]
+_s50, _s100 = today_signal.SELL_THRESHOLDS
+_TQQQ_SELL_FRACTION_BY_SCORE = [(_s100, 1.0), (_s50, 0.5)]
+
+
+def _tqqq_buy_allocation(score: float) -> float:
+    for threshold, fraction in _TQQQ_BUY_ALLOCATION_BY_SCORE:
+        if score <= threshold:
+            return fraction
+    raise ValueError(f"매수 신호가 아닌 점수({score})로 배분 비율을 계산하려고 함")
+
+
+def _tqqq_sell_fraction(score: float) -> float:
+    for threshold, fraction in sorted(_TQQQ_SELL_FRACTION_BY_SCORE, reverse=True):
+        if score >= threshold:
+            return fraction
+    raise ValueError(f"매도 신호가 아닌 점수({score})로 매도 비율을 계산하려고 함")
 
 
 KST = timezone(timedelta(hours=9))
@@ -65,6 +111,33 @@ def _within_domestic_close_window(now: datetime | None = None) -> bool:
     start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
     end = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
     return start <= now <= end
+
+
+# TQQQ(나스닥) 마감은 항상 16:00 America/New_York — 서머타임 계산은 zoneinfo에 맡긴다
+# (auto_trade_loop.py와 같은 이유·같은 값, 2026-08-31).
+NYSE_TZ = ZoneInfo("America/New_York")
+TQQQ_WINDOW_BEFORE = timedelta(minutes=20)
+TQQQ_WINDOW_AFTER = timedelta(minutes=20)
+
+
+def _today_nyse_close_kst(now_utc: datetime) -> datetime:
+    close_local = now_utc.astimezone(NYSE_TZ).replace(hour=16, minute=0, second=0, microsecond=0)
+    return close_local.astimezone(KST)
+
+
+def _within_tqqq_close_window(now: datetime | None = None) -> bool:
+    now_utc = now.astimezone(timezone.utc) if now else datetime.now(timezone.utc)
+    close_kst = _today_nyse_close_kst(now_utc)
+    return (close_kst - TQQQ_WINDOW_BEFORE
+            <= now_utc.astimezone(KST)
+            <= close_kst + TQQQ_WINDOW_AFTER)
+
+
+def _tqqq_window_message(now: datetime | None = None) -> str:
+    now_utc = now.astimezone(timezone.utc) if now else datetime.now(timezone.utc)
+    close_kst = _today_nyse_close_kst(now_utc)
+    return (f"실행 창(오늘 마감 {close_kst.strftime('%H:%M')} KST 전후 20분) 밖 "
+            f"(현재 {now_utc.astimezone(KST).strftime('%H:%M')})")
 
 
 def _not_executed(note: str) -> dict:
@@ -221,6 +294,280 @@ class KiwoomChaseOrder:
                 self._refresh_fill()
 
 
+# ── TQQQ(해외) ──────────────────────────────────────────────────────────────
+
+def _overseas_usd_cash() -> float:
+    """주문가능 달러. d0_usd_fx_entr = 당일 결제기준 외화예수금(2026-09-18 실측으로 확인)."""
+    data = get_overseas_cash_balance(mode="demo")
+    return float(data.get("d0_usd_fx_entr", "0") or "0")
+
+
+def _tqqq_holding() -> dict | None:
+    data = get_overseas_balance(stk_cd=TQQQ_TICKER, stex_tp=TQQQ_EXCG, mode="demo")
+    for h in data.get("result_list", []):
+        if h.get("stk_cd") == TQQQ_TICKER:
+            return {"qty": int(h["poss_qty"]), "avg_price": float(h["frgn_stk_book_uv"])}
+    return None
+
+
+def _overseas_sweep_price(book: dict, side: str, qty: int) -> float:
+    """국내판 _sweep_price와 같은 아이디어 — 남은 수량을 다 받아줄 만큼 깊은 가격.
+    해외는 필드명이 sel_1bid/sel_1bid_req 형식이고 가격에 부호(+/-)가 붙는다."""
+    prefix = "sel" if side == "buy" else "buy"
+    cumulative = 0
+    last_price = 0.0
+    for n in range(1, 11):
+        price = abs(float(book.get(f"{prefix}_{n}bid", "0") or "0"))
+        level_qty = int(book.get(f"{prefix}_{n}bid_req", "0") or "0")
+        if price <= 0:
+            continue
+        last_price = price
+        cumulative += level_qty
+        if cumulative >= qty:
+            return price
+    if last_price <= 0:
+        raise RuntimeError("호가가 전부 0입니다 — 미국 정규장 시간(22:30~05:00 KST)이 아닐 가능성이 높습니다.")
+    return last_price
+
+
+class KiwoomOverseasChaseOrder:
+    """국내판 KiwoomChaseOrder의 해외 버전. 상태 머신 구조는 같고 API만 /api/us/* 를 쓴다."""
+
+    # 미체결(ust21050) 응답 필드명을 아직 실측하지 못해(조회 시 미체결 주문이 없었음)
+    # 후보를 나열해 두고 찾는다. 하나도 못 찾으면 예외를 내서 실제 키를 드러낸다.
+    _ORD_NO_KEYS = ("ord_no", "orig_ord_no", "ordr_no")
+    _REMAIN_KEYS = ("oso_qty", "rmn_qty", "unfl_qty", "ord_rmnq")
+
+    def __init__(self, side: str, total_qty: int,
+                 max_reprices: int, max_seconds: float, poll_interval: float):
+        self.side = side
+        self.total_qty = total_qty
+        self.max_reprices = max_reprices
+        self.max_seconds = max_seconds
+        self.poll_interval = poll_interval
+
+        self.filled_qty = 0
+        self.reprice_count = 0
+        self.order = None  # {"ord_no":, "price":}
+        self.done = False
+        self.started_at = time.monotonic()
+
+    def _remaining(self) -> int:
+        return self.total_qty - self.filled_qty
+
+    def _remaining_from_unfilled(self) -> int | None:
+        data = get_overseas_unfilled_orders(stk_cd=TQQQ_TICKER, mode="demo")
+        rows = data.get("result_list", []) or []
+        for row in rows:
+            ord_no = next((row[k] for k in self._ORD_NO_KEYS if k in row), None)
+            if ord_no is None:
+                raise RuntimeError(
+                    "미체결 응답에서 주문번호 필드를 못 찾았습니다 — 체결 수량을 잘못 기록하지 "
+                    f"않도록 중단합니다. 실제 키 목록: {sorted(row)}")
+            if str(ord_no) != str(self.order["ord_no"]):
+                continue
+            remain = next((row[k] for k in self._REMAIN_KEYS if k in row), None)
+            if remain is None:
+                raise RuntimeError(
+                    "미체결 응답에서 잔량 필드를 못 찾았습니다 — 중단합니다. "
+                    f"실제 키 목록: {sorted(row)}")
+            return int(remain)
+        return None  # 목록에 없음 = 전량 체결(혹은 취소/거부)
+
+    def _refresh_fill(self) -> None:
+        if self.order is None:
+            return
+        remaining = self._remaining_from_unfilled()
+        self.filled_qty = self.total_qty if remaining is None else self.total_qty - remaining
+        print(f"  체결 확인: {self.filled_qty}/{self.total_qty}주")
+        if self._remaining() <= 0:
+            self.done = True
+
+    def _place_or_reprice(self) -> None:
+        if self.order is not None:
+            self._refresh_fill()
+            if self.done:
+                return
+
+        book = get_overseas_orderbook(TQQQ_TICKER, mode="demo")
+        price = round(_overseas_sweep_price(book, self.side, self._remaining()), 2)
+
+        if self.order is None:
+            result = place_overseas_order(TQQQ_TICKER, self.side, self._remaining(),
+                                          price=price, exchange=TQQQ_EXCG, mode="demo")
+            if result.get("return_code") != 0:
+                raise RuntimeError(f"주문 실패: {result.get('return_msg')}")
+            self.order = {"ord_no": result["ord_no"], "price": price}
+            print(f"  주문 접수: {self.side} {self._remaining()}주 @ ${price} (주문번호 {result['ord_no']})")
+            return
+
+        if self.order["price"] == price:
+            return
+
+        print(f"  가격 이동 감지 — 정정주문 (${self.order['price']} -> ${price})")
+        try:
+            result = amend_overseas_order(self.order["ord_no"], TQQQ_TICKER, price=price,
+                                          exchange=TQQQ_EXCG, mode="demo")
+            if result.get("return_code") != 0:
+                raise RuntimeError(result.get("return_msg", "알 수 없는 오류"))
+        except Exception as exc:  # noqa: BLE001
+            self._refresh_fill()
+            if self.done:
+                return
+            raise RuntimeError(f"정정 실패했는데 아직 미체결 잔량이 남아있음: {exc}") from exc
+        self.reprice_count += 1
+        self.order = {"ord_no": result["ord_no"], "price": price}
+        print(f"  정정 완료: {self.side} @ ${price} (주문번호 {result['ord_no']})")
+
+    def _give_up(self) -> None:
+        if self.order is None:
+            return
+        try:
+            result = cancel_overseas_order(self.order["ord_no"], TQQQ_TICKER,
+                                           exchange=TQQQ_EXCG, mode="demo")
+            if result.get("return_code") != 0:
+                raise RuntimeError(result.get("return_msg", "알 수 없는 오류"))
+            print(f"  남은 미체결 주문(주문번호 {self.order['ord_no']})을 취소했습니다.")
+        except Exception as exc:  # noqa: BLE001
+            self._refresh_fill()
+            if not self.done:
+                print(f"  경고: 중단 시 취소 실패 — 미체결 주문이 그대로 남아있을 수 있음: {exc}")
+
+    def run(self) -> None:
+        self._place_or_reprice()
+        self._refresh_fill()
+
+        while not self.done:
+            if time.monotonic() - self.started_at > self.max_seconds:
+                print(f"  최대 실행 시간({self.max_seconds}초) 초과 — 중단")
+                self._give_up()
+                return
+            if self.reprice_count >= self.max_reprices:
+                print(f"  최대 재주문 횟수({self.max_reprices}) 초과 — 중단 (미체결 {self._remaining()}주 남음)")
+                self._give_up()
+                return
+
+            time.sleep(self.poll_interval)
+
+            book = get_overseas_orderbook(TQQQ_TICKER, mode="demo")
+            tick_key = "sel_1bid" if self.side == "buy" else "buy_1bid"
+            tick_price = abs(float(book.get(tick_key, "0") or "0"))
+            stale = (
+                tick_price > 0
+                and ((self.side == "buy" and tick_price > self.order["price"])
+                     or (self.side == "sell" and tick_price < self.order["price"]))
+            )
+            if stale:
+                self._place_or_reprice()
+            else:
+                self._refresh_fill()
+
+
+def _tqqq_preflight(today_info: dict) -> tuple[float, float] | dict:
+    """실행 창·호가 확인. 통과하면 (기준가, 주문가능달러), 아니면 _not_executed(...)."""
+    if not _within_tqqq_close_window():
+        msg = _tqqq_window_message()
+        print(f"지금은 {msg} — 건너뜁니다.")
+        return _not_executed(f"{msg}이라 실행하지 않았습니다")
+
+    book = get_overseas_orderbook(TQQQ_TICKER, mode="demo")
+    ref_price = abs(float(book.get("sel_1bid", "0") or "0"))
+    if ref_price <= 0:
+        print("호가가 전부 0입니다 — 미국 정규장 시간(22:30~05:00 KST)이 아니라서 실행할 수 없습니다.")
+        return _not_executed("미국 정규장 시간이 아니라 호가를 받을 수 없어 실행하지 않았습니다")
+    return ref_price, _overseas_usd_cash()
+
+
+def execute_tqqq_buy(today_info: dict, dry_run: bool) -> dict:
+    pre = _tqqq_preflight(today_info)
+    if isinstance(pre, dict):
+        return pre
+    ref_price, cash = pre
+
+    allocation = _tqqq_buy_allocation(today_info["score"])
+    qty = int((cash * allocation) // ref_price)
+    print(f"주문가능 외화현금 ${cash:,.2f} -> {allocation:.0%} 배분, 주문수량 {qty}주 ({TQQQ_TICKER})")
+
+    if qty <= 0:
+        print("계산된 수량이 0주라 주문을 생략합니다.")
+        return _not_executed("주문가능 수량이 0주라 실행하지 않았습니다")
+    if dry_run:
+        print("--dry-run 모드 — 실제 주문은 넣지 않음.")
+        return _not_executed("dry-run 모드라 실제 주문은 넣지 않았습니다")
+
+    chaser = KiwoomOverseasChaseOrder("buy", qty, max_reprices=15, max_seconds=300.0, poll_interval=3.0)
+    chaser.run()
+
+    if not chaser.done:
+        print(f"미완료 종료: {chaser.filled_qty}/{qty}주만 체결됨 — 매매기록은 실제 체결분만 남김.")
+        if chaser.filled_qty <= 0:
+            return _not_executed("주문이 체결되지 않았습니다")
+
+    holding = _tqqq_holding()
+    if holding is None:
+        print("경고: 체결 후 보유내역 조회에서 해당 종목을 못 찾음 — 매매기록을 남기지 못했습니다.")
+        return _not_executed("체결 후 보유내역 조회에 실패했습니다")
+
+    log_trade(
+        ticker=TQQQ_TICKER,
+        action="buy",
+        quantity=chaser.filled_qty,
+        price=holding["avg_price"],
+        fg_score=today_info["score"],
+        memo="자동실행(auto_trade_loop_kiwoom.py), 해외주식(TQQQ) REST 폴링 추격주문",
+        account=KIWOOM_ACCOUNT_LABEL,
+    )
+    print(f"매매기록 저장 완료: buy {chaser.filled_qty}주 @ ${holding['avg_price']} (ticker='{TQQQ_TICKER}')")
+    return {"executed": True, "action": "buy", "ticker": TQQQ_TICKER,
+            "qty": chaser.filled_qty, "price": holding["avg_price"]}
+
+
+def execute_tqqq_sell(today_info: dict, dry_run: bool) -> dict:
+    pre = _tqqq_preflight(today_info)
+    if isinstance(pre, dict):
+        return pre
+
+    holding = _tqqq_holding()
+    if holding is None or holding["qty"] <= 0:
+        print(f"보유 중인 {TQQQ_TICKER}가 없어 매도할 수 없습니다.")
+        return _not_executed(f"보유 중인 {TQQQ_TICKER}가 없어 실행하지 않았습니다")
+
+    fraction = _tqqq_sell_fraction(today_info["score"])
+    qty = int(holding["qty"] * fraction)
+    print(f"보유 {holding['qty']}주 -> {fraction:.0%} 매도, 주문수량 {qty}주 ({TQQQ_TICKER})")
+
+    if qty <= 0:
+        print("계산된 수량이 0주라 주문을 생략합니다.")
+        return _not_executed("매도 수량이 0주라 실행하지 않았습니다")
+    if dry_run:
+        print("--dry-run 모드 — 실제 주문은 넣지 않음.")
+        return _not_executed("dry-run 모드라 실제 주문은 넣지 않았습니다")
+
+    avg_before = holding["avg_price"]  # 매도 후에는 평균단가가 사라질 수 있어 미리 잡아둔다
+    chaser = KiwoomOverseasChaseOrder("sell", qty, max_reprices=15, max_seconds=300.0, poll_interval=3.0)
+    chaser.run()
+
+    if not chaser.done:
+        print(f"미완료 종료: {chaser.filled_qty}/{qty}주만 체결됨 — 매매기록은 실제 체결분만 남김.")
+        if chaser.filled_qty <= 0:
+            return _not_executed("주문이 체결되지 않았습니다")
+
+    log_trade(
+        ticker=TQQQ_TICKER,
+        action="sell",
+        quantity=chaser.filled_qty,
+        price=avg_before,
+        fg_score=today_info["score"],
+        memo="자동실행(auto_trade_loop_kiwoom.py), 해외주식(TQQQ) REST 폴링 추격주문 (가격은 매도 전 평균단가)",
+        account=KIWOOM_ACCOUNT_LABEL,
+    )
+    print(f"매매기록 저장 완료: sell {chaser.filled_qty}주 (ticker='{TQQQ_TICKER}')")
+    return {"executed": True, "action": "sell", "ticker": TQQQ_TICKER,
+            "qty": chaser.filled_qty, "price": avg_before}
+
+
+# ── 커버드콜(국내) ───────────────────────────────────────────────────────────
+
 def execute_covered_call_buy(today_info: dict, dry_run: bool) -> dict:
     if not _within_domestic_close_window():
         now_kst = datetime.now(timezone.utc).astimezone(KST).strftime("%H:%M")
@@ -309,8 +656,10 @@ def main() -> None:
         print(f"-> 쿨다운 중이라 실행 안 함 ({result['cooldown']['reason']})")
     elif raw.action == "buy_covered_call":
         outcome = execute_covered_call_buy(today_info, args.dry_run)
-    elif raw.action in ("buy_tqqq", "sell_tqqq"):
-        print("-> TQQQ 신호이지만 이 스크립트(키움판)는 아직 해외주식 자동실행을 지원하지 않음.")
+    elif raw.action == "buy_tqqq":
+        outcome = execute_tqqq_buy(today_info, args.dry_run)
+    elif raw.action == "sell_tqqq":
+        outcome = execute_tqqq_sell(today_info, args.dry_run)
     else:
         print(f"-> 알 수 없는 액션({raw.action}) — 실행 안 함.")
 
