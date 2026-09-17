@@ -51,8 +51,13 @@ def main() -> None:
                  if k not in ("return_code", "return_msg") and isinstance(v, str) and v.strip()}
         print(f"      {dict(list(shown.items())[:6])}")
 
+    # stk_cd를 빈 값으로 두면 "종목 코드값이 없습니다[1517]"로 거절당한다(2026-09-18 실측).
+    # 문서상으로는 선택 항목처럼 보이지만 실제로는 필수다.
     print("[4/4] 해외 잔고 조회 (ND)")
-    _check("잔고", lambda: get_overseas_balance(stex_tp="ND", mode="demo"))
+    bal = _check("잔고", lambda: get_overseas_balance(stk_cd=TICKER, stex_tp="ND", mode="demo"))
+    if bal:
+        held = next((r for r in bal.get("result_list", []) if r.get("stk_cd") == TICKER), None)
+        print(f"      {TICKER} 보유 {int(held['poss_qty'])}주" if held else f"      {TICKER} 미보유")
 
     if quote is None:
         print("\n결론: 해외 모의 키가 클라우드에서 동작하지 않는다. TQQQ 연결을 진행하면 안 된다.")
