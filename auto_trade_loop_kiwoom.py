@@ -21,9 +21,12 @@ stk_cd(종목코드)가 **선택이 아니라 필수**였던 것이고, 종목�
   - 호가(usa20101)  : sel_1bid~sel_10bid / sel_1bid_req~, buy_1bid~ / buy_1bid_req~
   - 예수금(ust21160): d0_usd_fx_entr 가 주문가능 달러
   - 잔고(ust21070)  : result_list[].poss_qty(보유수량), .frgn_stk_book_uv(평균단가)
-미체결(ust21050)의 필드명만은 조회 시점에 미체결 주문이 하나도 없어 확인하지 못했다 —
-_remaining_from_unfilled()가 알려진 후보 키로 찾아보고, 못 찾으면 **조용히 "전량 체결"로
-넘어가지 않고 실제 키 목록을 찍으며 예외를 낸다**(체결 수량을 잘못 기록하는 것보다 낫다).
+미체결(ust21050)의 필드명만은 조회 시점에 미체결 주문이 하나도 없어 확인하지 못했다.
+후보 키로 찾아보고 못 알아보면 **경고를 찍고 보유수량 증감으로 체결량을 대신 잰다** —
+처음엔 여기서 예외를 내게 했는데, 그러면 "세는 방법을 모른다"는 이유로 매수 자체가
+통째로 막힌다. F&G≤30 매수 신호는 자주 오지 않아서 한 번 놓치면 회복이 안 되므로,
+주문을 넣는 쪽을 우선한다(2026-09-18, 사용자가 실제 누락을 겪고 지적함).
+정확한 필드명은 probe_kiwoom_overseas_unfilled.py로 장중에 확인한다.
 
 필요 환경변수: KIWOOM_PAPER_APP_KEY, KIWOOM_PAPER_APP_SECRET (국내)
               KIWOOM_PAPER_OVERSEAS_APP_KEY, KIWOOM_PAPER_OVERSEAS_APP_SECRET (해외)
@@ -337,9 +340,13 @@ class KiwoomOverseasChaseOrder:
     # 후보를 나열해 두고 찾는다. 하나도 못 찾으면 예외를 내서 실제 키를 드러낸다.
     _ORD_NO_KEYS = ("ord_no", "orig_ord_no", "ordr_no")
     _REMAIN_KEYS = ("oso_qty", "rmn_qty", "unfl_qty", "ord_rmnq")
+    _UNKNOWN = object()  # "필드명을 못 알아봤다" — None(전량 체결)과 구분해야 한다
 
     def __init__(self, side: str, total_qty: int,
-                 max_reprices: int, max_seconds: float, poll_interval: float):
+                 max_reprices: int, max_seconds: float, poll_interval: float,
+                 qty_before: int = 0):
+        self._qty_before = qty_before
+        self._use_holding_fallback = False
         self.side = side
         self.total_qty = total_qty
         self.max_reprices = max_reprices
@@ -356,30 +363,44 @@ class KiwoomOverseasChaseOrder:
         return self.total_qty - self.filled_qty
 
     def _remaining_from_unfilled(self) -> int | None:
+        """미체결 잔량. 필드명을 못 알아보면 _UNKNOWN을 돌려주고, 호출부가 보유수량
+        차이로 대체 측정한다 — **여기서 예외를 내서 매수 자체를 막지는 않는다.**
+        신호가 자주 오지 않는데 '체결 수량을 세는 방법'이 틀렸다는 이유로 매수를
+        통째로 놓치는 것이 훨씬 큰 손해이기 때문이다(2026-09-18 사용자 지적)."""
         data = get_overseas_unfilled_orders(stk_cd=TQQQ_TICKER, mode="demo")
         rows = data.get("result_list", []) or []
         for row in rows:
             ord_no = next((row[k] for k in self._ORD_NO_KEYS if k in row), None)
-            if ord_no is None:
-                raise RuntimeError(
-                    "미체결 응답에서 주문번호 필드를 못 찾았습니다 — 체결 수량을 잘못 기록하지 "
-                    f"않도록 중단합니다. 실제 키 목록: {sorted(row)}")
+            remain = next((row[k] for k in self._REMAIN_KEYS if k in row), None)
+            if ord_no is None or remain is None:
+                print(f"  경고: 미체결 응답 필드명을 못 알아봤습니다 — 보유수량 변화로 "
+                      f"대신 셉니다. 실제 키 목록: {sorted(row)}")
+                return self._UNKNOWN
             if str(ord_no) != str(self.order["ord_no"]):
                 continue
-            remain = next((row[k] for k in self._REMAIN_KEYS if k in row), None)
-            if remain is None:
-                raise RuntimeError(
-                    "미체결 응답에서 잔량 필드를 못 찾았습니다 — 중단합니다. "
-                    f"실제 키 목록: {sorted(row)}")
             return int(remain)
         return None  # 목록에 없음 = 전량 체결(혹은 취소/거부)
+
+    def _filled_from_holding(self) -> int:
+        """보유수량 증감으로 체결량을 잰다(대체 수단). 정산 반영이 늦으면 실제보다
+        적게 나올 수 있어서, 한 번 올라간 값은 내려가지 않게 max로만 갱신한다."""
+        holding = _tqqq_holding()
+        now_qty = holding["qty"] if holding else 0
+        moved = (now_qty - self._qty_before) if self.side == "buy" else (self._qty_before - now_qty)
+        return max(0, min(self.total_qty, moved))
 
     def _refresh_fill(self) -> None:
         if self.order is None:
             return
         remaining = self._remaining_from_unfilled()
-        self.filled_qty = self.total_qty if remaining is None else self.total_qty - remaining
-        print(f"  체결 확인: {self.filled_qty}/{self.total_qty}주")
+        if remaining is self._UNKNOWN:
+            self._use_holding_fallback = True
+        if self._use_holding_fallback:
+            self.filled_qty = max(self.filled_qty, self._filled_from_holding())
+        else:
+            self.filled_qty = self.total_qty if remaining is None else self.total_qty - remaining
+        print(f"  체결 확인: {self.filled_qty}/{self.total_qty}주"
+              + (" (보유수량 기준)" if self._use_holding_fallback else ""))
         if self._remaining() <= 0:
             self.done = True
 
@@ -495,7 +516,10 @@ def execute_tqqq_buy(today_info: dict, dry_run: bool) -> dict:
         print("--dry-run 모드 — 실제 주문은 넣지 않음.")
         return _not_executed("dry-run 모드라 실제 주문은 넣지 않았습니다")
 
-    chaser = KiwoomOverseasChaseOrder("buy", qty, max_reprices=15, max_seconds=300.0, poll_interval=3.0)
+    before = _tqqq_holding()
+    chaser = KiwoomOverseasChaseOrder("buy", qty, max_reprices=15, max_seconds=300.0,
+                                      poll_interval=3.0,
+                                      qty_before=before["qty"] if before else 0)
     chaser.run()
 
     if not chaser.done:
@@ -544,7 +568,8 @@ def execute_tqqq_sell(today_info: dict, dry_run: bool) -> dict:
         return _not_executed("dry-run 모드라 실제 주문은 넣지 않았습니다")
 
     avg_before = holding["avg_price"]  # 매도 후에는 평균단가가 사라질 수 있어 미리 잡아둔다
-    chaser = KiwoomOverseasChaseOrder("sell", qty, max_reprices=15, max_seconds=300.0, poll_interval=3.0)
+    chaser = KiwoomOverseasChaseOrder("sell", qty, max_reprices=15, max_seconds=300.0,
+                                      poll_interval=3.0, qty_before=holding["qty"])
     chaser.run()
 
     if not chaser.done:
