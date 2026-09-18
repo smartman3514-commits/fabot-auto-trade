@@ -53,7 +53,7 @@ def main() -> None:
 
     try:
         print("[2/3] 미체결 목록 조회 — 실제 필드명 확인")
-        data = get_overseas_unfilled_orders(stk_cd=TICKER, mode="demo")
+        data = get_overseas_unfilled_orders(stk_cd=TICKER, stex_tp=EXCG, mode="demo")
         rows = data.get("result_list", []) or []
         print(f"  미체결 {len(rows)}건")
         for row in rows:

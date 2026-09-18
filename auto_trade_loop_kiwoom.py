@@ -372,7 +372,11 @@ class KiwoomOverseasChaseOrder:
         차이로 대체 측정한다 — **여기서 예외를 내서 매수 자체를 막지는 않는다.**
         신호가 자주 오지 않는데 '체결 수량을 세는 방법'이 틀렸다는 이유로 매수를
         통째로 놓치는 것이 훨씬 큰 손해이기 때문이다(2026-09-18 사용자 지적)."""
-        data = get_overseas_unfilled_orders(stk_cd=TQQQ_TICKER, mode="demo")
+        try:
+            data = get_overseas_unfilled_orders(stk_cd=TQQQ_TICKER, stex_tp=TQQQ_EXCG, mode="demo")
+        except Exception as exc:
+            print(f"  경고: 미체결 조회 API 실패({exc}) — 보유수량 변화로 대신 셉니다.")
+            return self._UNKNOWN
         rows = data.get("result_list", []) or []
         for row in rows:
             ord_no = next((row[k] for k in self._ORD_NO_KEYS if k in row), None)

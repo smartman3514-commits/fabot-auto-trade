@@ -437,9 +437,12 @@ def cancel_overseas_order(
     return _post(mode, "overseas", "ust20003", "/api/us/ordr", body, cred=cred)
 
 
-def get_overseas_unfilled_orders(stk_cd: str = "", mode: str = "demo", cred: Credential | None = None) -> dict:
-    """미국주식 원장 미체결(ust21050)."""
-    body = {"ord_dt": "", "slby_tp": "0", "stex_tp": "", "stk_cd": stk_cd}
+def get_overseas_unfilled_orders(
+    stk_cd: str = "", stex_tp: str = "ND", mode: str = "demo", cred: Credential | None = None,
+) -> dict:
+    """미국주식 원장 미체결(ust21050). stex_tp는 get_overseas_balance와 같은 이유로 필수
+    (빈 값이면 "거래소 구분값이 없습니다" 에러) — 2026-09-19 실측으로 확인."""
+    body = {"ord_dt": "", "slby_tp": "0", "stex_tp": stex_tp, "stk_cd": stk_cd}
     return _post_readonly(mode, "overseas", "ust21050", "/api/us/acnt", body, cred=cred)
 
 
