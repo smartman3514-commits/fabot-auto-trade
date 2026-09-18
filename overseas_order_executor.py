@@ -163,9 +163,44 @@ def _check_remaining(pdno: str, excg: str, odno: str) -> int | None:
     return int(match["nccs_qty"])
 
 
+def get_overseas_order_capacity(pdno: str, excg: str, ref_price: float) -> dict:
+    """주문가능 외화현금과 **증권사가 직접 계산한 최대 주문가능 수량**을 함께 돌려준다.
+
+    왜 max_qty까지 받아오는가(2026-09-18): 우리 계산은 `현금 // 기준가`인데, KIS는 수수료
+    몫을 빼고 한도를 잡는다. 실측으로 $74,725.98 / $71.30 이면 우리는 1,048주인데 KIS가
+    말하는 한도는 1,037주였다(약 1.07% 차이). 25%·50% 단계에서는 여유가 많아 드러나지
+    않지만, **F&G<=20의 100% 단계에서는 실탄을 다 쓰므로 한도를 넘겨 주문이 거부된다** —
+    하필 가장 중요한 매수에서 터지는 종류의 문제다. 그래서 둘 중 작은 값을 쓴다.
+    """
+    _throttle()
+    response = _get_with_retry(
+        f"{BASE_URL}/uapi/overseas-stock/v1/trading/inquire-psamount",
+        headers={**_headers("VTTS3007R"), "tr_cont": ""},
+        params={
+            "CANO": _cano(), "ACNT_PRDT_CD": ACNT_PRDT_CD, "OVRS_EXCG_CD": excg,
+            "OVRS_ORD_UNPR": f"{ref_price:.2f}", "ITEM_CD": pdno,
+        },
+    )
+    _raise_verbose(response)
+    data = response.json()
+    if data["rt_cd"] != "0":
+        raise RuntimeError(f"매수가능금액 조회 실패: {data['msg1']}")
+    out = data["output"]
+    raw_max = out.get("max_ord_psbl_qty")
+    return {
+        "cash": float(out["ord_psbl_frcr_amt"]),
+        # 필드가 없거나 비어 오면 한도 없음(None)으로 두고, 호출부가 기존처럼 동작하게 한다.
+        "max_qty": int(raw_max) if str(raw_max or "").strip().isdigit() else None,
+    }
+
+
 def get_overseas_cash_balance(pdno: str, excg: str, ref_price: float) -> float:
-    """주문가능 외화현금(USD, ord_psbl_frcr_amt)을 조회한다. F&G 신호의 '실탄 N%' 계산에 씀.
-    KIS API 스펙상 기준가(ref_price)와 종목코드가 필수 파라미터라 미리 받아온 호가를 넘겨야 한다."""
+    """주문가능 외화현금(USD, ord_psbl_frcr_amt)만 필요할 때 쓰는 얇은 래퍼."""
+    return get_overseas_order_capacity(pdno, excg, ref_price)["cash"]
+
+
+def _get_overseas_cash_balance_legacy(pdno: str, excg: str, ref_price: float) -> float:
+    """(옛 구현 — get_overseas_order_capacity로 대체됨)"""
     _throttle()
     response = _get_with_retry(
         f"{BASE_URL}/uapi/overseas-stock/v1/trading/inquire-psamount",

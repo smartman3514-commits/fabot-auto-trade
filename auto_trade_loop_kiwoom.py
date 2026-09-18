@@ -77,6 +77,11 @@ KIWOOM_ACCOUNT_LABEL = "키움 모의투자"
 TQQQ_TICKER = today_signal.TQQQ_TICKER
 TQQQ_EXCG = "ND"  # 키움 거래소 구분(나스닥) — KIS의 "NASD"와 표기가 다르다
 
+# 키움 해외에는 "최대 주문가능 수량" 조회가 없어서(2026-09-18 확인) 수수료 몫을 이 비율로
+# 직접 떼어 둔다. KIS가 같은 시점에 보여준 실측 차이(우리 계산 1,048주 vs 한도 1,037주,
+# 약 1.07%)를 근거로 잡은 **추정치**다 — 키움 한도 조회를 찾으면 그 값으로 대체할 것.
+OVERSEAS_FEE_MARGIN = 0.011
+
 # 임계값은 절대 여기 적지 않고 today_signal 하나만 본다. 같은 상수를 두 파일에 따로 들고
 # 있다가 2026-08-31 임계값 변경이 한쪽에만 반영되어, F&G 26~30 구간에서 신호는 정확히
 # 잡히고도 배분 계산에서 ValueError로 조용히 실패해 실제 매수가 누락된 사고가 있었다
@@ -514,8 +519,15 @@ def execute_tqqq_buy(today_info: dict, dry_run: bool, ignore_window: bool = Fals
     ref_price, cash = pre
 
     allocation = _tqqq_buy_allocation(today_info["score"])
-    qty = int((cash * allocation) // ref_price)
-    print(f"주문가능 외화현금 ${cash:,.2f} -> {allocation:.0%} 배분, 주문수량 {qty}주 ({TQQQ_TICKER})")
+    # 수수료 몫을 빼고 계산한다. KIS는 증권사가 직접 한도(max_ord_psbl_qty)를 알려줘서
+    # 그 값으로 자르지만(auto_trade_loop.py), 키움 해외에는 대응되는 조회가 없다
+    # (2026-09-18 확인). KIS가 실측으로 보여준 차이가 약 1.07%였으므로 같은 폭을 여유로
+    # 둔다 — 100% 단계에서 실탄을 전부 쓰면 수수료만큼 모자라 주문이 거부되기 때문이다.
+    # 키움에 한도 조회 API가 확인되면 이 추정치 대신 그 값을 쓸 것.
+    budget = cash * allocation * (1 - OVERSEAS_FEE_MARGIN)
+    qty = int(budget // ref_price)
+    print(f"주문가능 외화현금 ${cash:,.2f} -> {allocation:.0%} 배분"
+          f"(수수료 여유 {OVERSEAS_FEE_MARGIN:.1%} 제외), 주문수량 {qty}주 ({TQQQ_TICKER})")
 
     if qty <= 0:
         print("계산된 수량이 0주라 주문을 생략합니다.")

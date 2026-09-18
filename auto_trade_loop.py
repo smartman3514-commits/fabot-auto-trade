@@ -41,6 +41,7 @@ from live_order_executor import ChaseOrder, get_cash_balance, get_holding, _get_
 from overseas_order_executor import (
     OverseasChaseOrder,
     get_overseas_cash_balance,
+    get_overseas_order_capacity,
     get_overseas_holding,
     _get_asking_price as _get_overseas_asking_price,
 )
@@ -216,10 +217,17 @@ async def _execute_tqqq_buy(today_info: dict, dry_run: bool) -> dict:
         print("호가가 전부 0입니다 — 미국 정규장 시간(22:30~05:00 KST)이 아니라서 실행할 수 없습니다.")
         return _not_executed("미국 정규장 시간이 아니라 호가를 받을 수 없어 실행하지 않았습니다")
 
-    cash = get_overseas_cash_balance(today_signal.TQQQ_TICKER, TQQQ_EXCG, ref_price)
+    capacity = get_overseas_order_capacity(today_signal.TQQQ_TICKER, TQQQ_EXCG, ref_price)
+    cash, broker_max = capacity["cash"], capacity["max_qty"]
     allocation = _tqqq_buy_allocation(today_info["score"])
     qty = int((cash * allocation) // ref_price)
     print(f"주문가능 외화현금 ${cash:,.2f} -> {allocation:.0%} 배분, 주문수량 {qty}주 ({today_signal.TQQQ_TICKER})")
+    # 증권사가 계산한 한도를 넘지 않게 자른다. 수수료 몫 때문에 우리 계산이 한도보다 조금
+    # 크게 나온다(2026-09-18 실측: 우리 1,048주 vs KIS 한도 1,037주). 100% 단계에서만
+    # 실제로 걸리지만, 그게 가장 중요한 매수라 항상 확인한다.
+    if broker_max is not None and qty > broker_max:
+        print(f"  증권사 한도({broker_max}주)를 넘어 {qty}주 -> {broker_max}주로 줄입니다(수수료 몫).")
+        qty = broker_max
 
     if qty <= 0:
         print("계산된 수량이 0주라 주문을 생략합니다.")
