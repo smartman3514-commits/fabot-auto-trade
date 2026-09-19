@@ -1,0 +1,80 @@
+name: FABOT 추정 배당 기록 (매월 5일)
+
+# 모의계좌는 실제 배당이 안 나온다(2026-09-19 확인) — 그래서 매월 5일에 커버드콜(472150)
+# 평가금액의 1.25%(연 15% 가정, 대시보드 "예상 월 현금흐름"과 동일 가정)를 추정 배당으로
+# trades 테이블에 기록한다. 시각까지 정확할 필요는 없는 월간 작업이라, 다른 스케줄(auto-trade.yml)
+# 처럼 cron-job.org repository_dispatch를 쓰지 않고 GitHub Actions 자체 schedule만 쓴다.
+
+on:
+  schedule:
+    - cron: "10 0 5 * *"  # 매월 5일 00:10 UTC = 09:10 KST
+  workflow_dispatch: {}
+
+jobs:
+  dividend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore Kiwoom token cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .kiwoom_token_cache_demo_domestic.json
+          key: kiwoom-domestic-token-${{ github.run_id }}
+          restore-keys: |
+            kiwoom-domestic-token-
+
+      - name: Estimate and log dividend (KIS + Kiwoom)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          KIS_PAPER_APP_KEY: ${{ secrets.KIS_PAPER_APP_KEY }}
+          KIS_PAPER_APP_SECRET: ${{ secrets.KIS_PAPER_APP_SECRET }}
+          KIS_PAPER_STOCK: ${{ secrets.KIS_PAPER_STOCK }}
+          KIWOOM_PAPER_APP_KEY: ${{ secrets.KIWOOM_PAPER_APP_KEY }}
+          KIWOOM_PAPER_APP_SECRET: ${{ secrets.KIWOOM_PAPER_APP_SECRET }}
+        run: python estimate_dividend.py 2>&1 | tee dividend_result.txt
+
+      - name: Save Kiwoom token cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .kiwoom_token_cache_demo_domestic.json
+          key: kiwoom-domestic-token-${{ github.run_id }}
+
+      - name: Notify Telegram
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          {
+            echo "💰 FABOT 추정 배당 기록 ($(date -u -d '+9 hours' '+%Y-%m-%d %H:%M') KST)"
+            echo ""
+            cat dividend_result.txt
+          } > telegram_message.txt
+
+          python - <<'PY'
+          import os
+          import requests
+
+          with open("telegram_message.txt", encoding="utf-8") as f:
+              text = f.read()
+
+          token = os.environ["TELEGRAM_BOT_TOKEN"]
+          chat_id = os.environ["TELEGRAM_CHAT_ID"]
+          resp = requests.post(
+              f"https://api.telegram.org/bot{token}/sendMessage",
+              json={"chat_id": chat_id, "text": text[:4000]},
+              timeout=20,
+          )
+          resp.raise_for_status()
+          print("텔레그램 알림 전송 완료")
+          PY
