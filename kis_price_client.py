@@ -186,6 +186,37 @@ def fetch_price_history(ticker: str, start: datetime, end: datetime | None = Non
     return series[series.index >= pd.Timestamp(start)]
 
 
+def fetch_dividend_schedule(sht_cd: str, f_dt: str, t_dt: str) -> list[dict]:
+    """예탁원정보(배당일정)[국내주식-145] — 종목의 실제 배당 기준일/주당배당금/지급일을
+    그대로 돌려준다(2026-09-20 확인, TR_ID HHKDB669102C0). 계좌별 조회가 아니라 종목
+    자체의 실제 배당 데이터라 KIS/키움 계좌 둘 다 이 값으로 실제 배당액을 정확히
+    계산할 수 있다 — "연 15% 가정" 어림값 대신 쓴다.
+
+    f_dt/t_dt는 "YYYYMMDD" 형식. 반환: [{"record_date": "YYYY-MM-DD", "per_share": float,
+    "pay_date": "YYYY-MM-DD"}, ...] (record_date 오름차순).
+    """
+    _throttle()
+    url = f"{BASE_URL}/uapi/domestic-stock/v1/ksdinfo/dividend"
+    params = {"CTS": "", "GB1": "0", "F_DT": f_dt, "T_DT": t_dt, "SHT_CD": sht_cd, "HIGH_GB": ""}
+    response = _get_with_retry(url, {**_headers("HHKDB669102C0"), "tr_cont": ""}, params)
+    response.raise_for_status()
+    data = response.json()
+    if data.get("rt_cd") != "0":
+        raise RuntimeError(f"{sht_cd} 배당일정 조회 실패: {data}")
+
+    rows = []
+    for r in data.get("output1") or []:
+        pay_dt = (r.get("divi_pay_dt") or "").replace("/", "-")
+        if not pay_dt or not r.get("record_date"):
+            continue
+        rows.append({
+            "record_date": f"{r['record_date'][:4]}-{r['record_date'][4:6]}-{r['record_date'][6:]}",
+            "per_share": float(r["per_sto_divi_amt"]),
+            "pay_date": pay_dt,
+        })
+    return sorted(rows, key=lambda r: r["record_date"])
+
+
 if __name__ == "__main__":
     for t in EXCHANGE_BY_TICKER:
         q = fetch_live_quote(t)
