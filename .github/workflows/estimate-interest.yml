@@ -1,0 +1,82 @@
+name: FABOT 추정 현금 이자 기록 (매월 3일)
+
+# 모의계좌는 예수금(현금)에 이자가 안 붙는다 — 그래서 매월 3일에 현금 잔고(원화+달러 환산)의
+# 연 3% 가정을 월할로 계산해서 trades 테이블에 "현금흐름"으로 기록한다(estimate_dividend.py와
+# 같은 이유·같은 방식, 날짜만 다름). 시각까지 정확할 필요 없는 월간 작업이라 GitHub Actions
+# 자체 schedule만 쓴다.
+
+on:
+  schedule:
+    - cron: "10 0 3 * *"  # 매월 3일 00:10 UTC = 09:10 KST
+  workflow_dispatch: {}
+
+jobs:
+  interest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore Kiwoom token cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .kiwoom_token_cache_demo_domestic.json
+          key: kiwoom-domestic-token-${{ github.run_id }}
+          restore-keys: |
+            kiwoom-domestic-token-
+
+      - name: Estimate and log cash interest (KIS + Kiwoom)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          KIS_PAPER_APP_KEY: ${{ secrets.KIS_PAPER_APP_KEY }}
+          KIS_PAPER_APP_SECRET: ${{ secrets.KIS_PAPER_APP_SECRET }}
+          KIS_PAPER_STOCK: ${{ secrets.KIS_PAPER_STOCK }}
+          KIWOOM_PAPER_APP_KEY: ${{ secrets.KIWOOM_PAPER_APP_KEY }}
+          KIWOOM_PAPER_APP_SECRET: ${{ secrets.KIWOOM_PAPER_APP_SECRET }}
+          KIWOOM_PAPER_OVERSEAS_APP_KEY: ${{ secrets.KIWOOM_PAPER_OVERSEAS_APP_KEY }}
+          KIWOOM_PAPER_OVERSEAS_APP_SECRET: ${{ secrets.KIWOOM_PAPER_OVERSEAS_APP_SECRET }}
+        run: python estimate_interest.py 2>&1 | tee interest_result.txt
+
+      - name: Save Kiwoom token cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .kiwoom_token_cache_demo_domestic.json
+          key: kiwoom-domestic-token-${{ github.run_id }}
+
+      - name: Notify Telegram
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          {
+            echo "🏦 FABOT 추정 현금 이자 기록 ($(date -u -d '+9 hours' '+%Y-%m-%d %H:%M') KST)"
+            echo ""
+            cat interest_result.txt
+          } > telegram_message.txt
+
+          python - <<'PY'
+          import os
+          import requests
+
+          with open("telegram_message.txt", encoding="utf-8") as f:
+              text = f.read()
+
+          token = os.environ["TELEGRAM_BOT_TOKEN"]
+          chat_id = os.environ["TELEGRAM_CHAT_ID"]
+          resp = requests.post(
+              f"https://api.telegram.org/bot{token}/sendMessage",
+              json={"chat_id": chat_id, "text": text[:4000]},
+              timeout=20,
+          )
+          resp.raise_for_status()
+          print("텔레그램 알림 전송 완료")
+          PY
