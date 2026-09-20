@@ -2,22 +2,22 @@
 현금이 그대로였음). 그래서 매달 5일에 이 스크립트를 돌려서, 대시보드의 "예상 월 현금흐름"과
 같은 가정(연 15%, app.js 참고)으로 커버드콜(472150) 평가금액의 1.25%를 추정 배당으로
 trades 테이블에 기록한다. 사용자 지정(2026-09-19): KIS/키움 두 계좌 다 기록.
+
+[2026-09-20 수정] KIS는 위 가정과 달리 실제로 배당이 들어오는 것으로 확인됨 — 09-05
+추정 배당(3,014,281원) 기록 이후, 실제 HTS 예수금이 "시작 현금 - 매수에 쓴 돈"보다
+정확히 그 금액만큼 더 많았다(환율 변수가 없는 원화 예수금만으로 확인, 오차 없음 —
+사용자가 eFriend 모의투자 계좌 잔고 화면 직접 확인). 그래서 KIS는 이 스크립트가 추정
+배당을 또 기록하면 이중 계상이 된다 — KIS는 건너뛰고 키움만 기록한다(키움은 09-19
+기준 5주 이상 현금 변동 없음을 실측 확인함, 계속 추정 필요).
 """
 import sys
 
 from cooldown import log_trade
 from kiwoom_client import get_domestic_holdings
-from live_order_executor import _inquire_balance_raw
 
 COVERED_CALL_STOCK_CODE = "472150"
 COVERED_CALL_TRADE_KEY = "TIGER 배당커버드콜액티브(472150)"
 MONTHLY_DIVIDEND_RATE = 0.15 / 12  # 연 15% 가정을 월할로 — app.js의 0.0125와 동일
-
-
-def _kis_eval_amount() -> float | None:
-    data = _inquire_balance_raw()
-    match = next((r for r in data["output1"] if r["pdno"] == COVERED_CALL_STOCK_CODE), None)
-    return float(match["evlu_amt"]) if match else None
 
 
 def _kiwoom_eval_amount() -> float | None:
@@ -46,15 +46,10 @@ def _log_dividend(account: str, eval_amount: float) -> None:
 def main() -> int:
     ok = True
 
-    try:
-        kis_amount = _kis_eval_amount()
-        if kis_amount is None:
-            print("KIS: 472150 보유 없음 — 건너뜁니다.")
-        else:
-            _log_dividend("KIS 모의투자", kis_amount)
-    except Exception as exc:
-        ok = False
-        print(f"KIS 배당 추정 실패: {exc}")
+    # KIS는 실제 배당이 들어오는 것으로 확인돼(2026-09-20) 더 이상 추정 기록하지 않는다 —
+    # 위 모듈 docstring 참고. 실제 배당 자체는 broker_live.js가 조회하는 실제 현금에 이미
+    # 반영되므로, 대시보드 총수익 계산에서 빠지지 않는다.
+    print("KIS: 실제 배당이 들어오는 것으로 확인되어 추정 기록을 건너뜁니다.")
 
     try:
         kiwoom_amount = _kiwoom_eval_amount()
